@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: android-apk-${{ github.ref }}
@@ -107,6 +107,22 @@ jobs:
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 30
+
+      - name: APK ook op de laatste release zetten
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          TAG=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName' || true)
+          if [ -z "$TAG" ]; then
+            echo "nog geen release gevonden; de APK blijft als artifact staan"
+            exit 0
+          fi
+          VERSION=$(tr -d '\r\n' < version.txt)
+          cp android/app/build/outputs/apk/release/app-release.apk "MediaMetadata-Android-$VERSION.apk"
+          gh release upload "$TAG" "MediaMetadata-Android-$VERSION.apk" --repo "$GITHUB_REPOSITORY" --clobber
+          echo "APK toegevoegd aan release $TAG"
 
       - uses: actions/upload-artifact@v4
         with:
