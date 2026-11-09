@@ -48,6 +48,12 @@ def selftest() -> int:
         lines.append(message)
         if sys.stdout is not None:
             print(message, flush=True)
+        if out_path:
+            # Direct wegschrijven: als de app hierna crasht, blijft het spoor staan.
+            try:
+                out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            except OSError:
+                pass
 
     from PyQt5.QtWidgets import QApplication
 

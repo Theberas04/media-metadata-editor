@@ -1,0 +1,134 @@
+name: Android APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'android/**'
+      - 'version.txt'
+      - '.github/workflows/android-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Android SDK-pakketten
+        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Tag-laag testen op de JVM (echte mediabestanden)
+        run: bash android/tests/run-jvm-tests.sh
+
+      - name: Ondertekeningssleutel uitpakken
+        run: |
+          printf '%s' "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android/release.p12
+          test "$(wc -c < android/release.p12)" -gt 1000
+          echo "ANDROID_KEYSTORE_PATH=$PWD/android/release.p12" >> "$GITHUB_ENV"
+
+      - name: Debug- en release-APK bouwen
+        working-directory: android
+        run: gradle :app:assembleDebug :app:assembleRelease --stacktrace
+
+      - name: APK controleren
+        working-directory: android
+        run: |
+          set -e
+          test -s app/build/outputs/apk/debug/app-debug.apk
+          test -s app/build/outputs/apk/release/app-release.apk
+          for apk in app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/release/app-release.apk; do
+            unzip -t "$apk" > /dev/null
+            unzip -l "$apk" | grep -q 'AndroidManifest.xml'
+            unzip -l "$apk" | grep -q 'classes.dex'
+          done
+          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | tail -1)
+          "$APKSIGNER" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
+          "$APKSIGNER" verify --print-certs app/build/outputs/apk/release/app-release.apk | grep -q 'CN=Tom Werdens'
+          AAPT=$(ls "$ANDROID_HOME"/build-tools/*/aapt | tail -1)
+          "$AAPT" dump badging app/build/outputs/apk/release/app-release.apk | grep -E "package:|launchable-activity|application-icon" | head -5
+          "$AAPT" dump badging app/build/outputs/apk/release/app-release.apk | grep -q "versionName='$(cat ../version.txt | tr -d '\r\n')'"
+          # De tag-klassen moeten echt in de dex zitten.
+          unzip -p app/build/outputs/apk/release/app-release.apk classes.dex | strings | grep -q "Lnl/werdens/mediameta/Mp4Tags;"
+          echo "sha256: $(sha256sum app/build/outputs/apk/release/app-release.apk | cut -d' ' -f1)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MediaMeta-Android-release
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MediaMeta-Android-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  screenshots:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: MediaMeta-Android-debug
+          path: apk
+
+      - name: Hardware-versnelling aanzetten waar mogelijk
+        run: if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
+
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          script: |
+            bash android/tests/emulator-smoke.sh apk/app-debug.apk screenshots
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: MediaMeta-Android-screenshots
+          path: screenshots/*
+          if-no-files-found: warn
+          retention-days: 30

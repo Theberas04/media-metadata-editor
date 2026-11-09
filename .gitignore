@@ -23,3 +23,7 @@ android/local.properties
 android/release.p12
 android/*.keystore
 android/*.jks
+# JVM-testlibs en lokale ondertekeningsspullen
+.jvm-libs/
+.signing/
+android/local.properties

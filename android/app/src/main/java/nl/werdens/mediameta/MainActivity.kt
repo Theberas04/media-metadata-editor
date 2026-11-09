@@ -7,6 +7,7 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.util.Log
 import android.view.View
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -42,6 +43,7 @@ class MainActivity : AppCompatActivity() {
     private var displayName: String = ""
     private var canWrite = false
     private var pendingSaveValues: Map<String, String>? = null
+    private var posterBitmap: Bitmap? = null
 
     private val openDocument =
         registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -77,7 +79,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                showPoster()
+                posterBitmap?.let { setPoster(it) }
                 setStatus("Dit formaat kan de speler niet afspelen: ${error.errorCodeName}", error = true)
             }
         })
@@ -88,6 +90,7 @@ class MainActivity : AppCompatActivity() {
 
         setButtonsEnabled(hasFile = false, busy = false)
         handleIntent(intent)
+        Log.i("MediaMeta", "MediaMetaReady version=" + packageManager.getPackageInfo(packageName, 0).versionName)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -121,11 +124,7 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             try {
                 val result = withContext(Dispatchers.IO) { importFile(uri) }
-                sourceUri = uri
-                workFile = result.first
-                displayName = result.second
-                canWrite = MediaTags.canWrite(displayName)
-                fillFromFile()
+                applyFile(result.first, result.second, uri)
             } catch (e: Exception) {
                 setStatus("Kon het bestand niet openen: ${e.message}", error = true)
             } finally {
@@ -160,8 +159,12 @@ class MainActivity : AppCompatActivity() {
         return uri.lastPathSegment ?: "media"
     }
 
-    private fun fillFromFile() {
-        val file = workFile ?: return
+    private fun applyFile(file: File, name: String, uri: Uri?) {
+        sourceUri = uri
+        workFile = file
+        displayName = name
+        canWrite = MediaTags.canWrite(name)
+
         val retriever = MediaMetadataRetriever()
         var info = ""
         var poster: Bitmap? = null
@@ -187,7 +190,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         } catch (e: Exception) {
-            info = "${displayName.substringAfterLast('.', "bestand")}  ·  ${humanSize(file.length())}"
+            info = "${name.substringAfterLast('.', "bestand")}  ·  ${humanSize(file.length())}"
         } finally {
             try {
                 retriever.release()
@@ -195,12 +198,12 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        binding.fileInfo.text = "$displayName  ·  $info"
+        binding.fileInfo.text = "$name  ·  $info"
         binding.fileInfo.visibility = View.VISIBLE
         binding.hintText.visibility = View.GONE
 
         applyTags(readTags(file))
-        showPoster(poster)
+        setPoster(poster)
 
         val exo = player ?: return
         exo.setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
@@ -241,7 +244,6 @@ class MainActivity : AppCompatActivity() {
             result["album"] = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM) ?: ""
             result["genre"] = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE) ?: ""
             result["year"] = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_YEAR) ?: ""
-            result["comment"] = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_COMMENT) ?: ""
         } catch (_: Exception) {
         } finally {
             try {
@@ -386,7 +388,8 @@ class MainActivity : AppCompatActivity() {
 
     // ------------------------------------------------------------- weergave
 
-    private fun showPoster(poster: Bitmap?) {
+    private fun setPoster(poster: Bitmap?) {
+        posterBitmap = poster
         val image = binding.posterImage
         if (poster == null) {
             image.visibility = View.GONE
