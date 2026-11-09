@@ -66,7 +66,9 @@ jobs:
           if (!$audio) { throw "Qt audio-plugin ontbreekt: geluid zou niet werken" }
           $media = Get-ChildItem -Path $root -Recurse -Include 'dsengine.dll','wmfengine.dll' -ErrorAction SilentlyContinue
           if (!$media) { throw "Qt mediaservice-plugin ontbreekt: afspelen zou niet werken" }
-          if (!(Test-Path (Join-Path $root 'branding\logo.png'))) { throw "logo ontbreekt in de build" }
+          $logo = Get-ChildItem -Path $root -Recurse -Filter 'logo.png' -ErrorAction SilentlyContinue | Where-Object { $_.FullName -like '*branding*' }
+          if (!$logo) { throw "logo ontbreekt in de build" }
+          Write-Host "logo ok: $($logo[0].FullName)"
           Get-ChildItem -Path $root -Recurse -Filter 'ffmpeg*.exe' | ForEach-Object { Write-Host "ffmpeg: $($_.FullName) ($([math]::Round($_.Length/1MB,1)) MB)" }
 
       - name: Self-test the packaged exe

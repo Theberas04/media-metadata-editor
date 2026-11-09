@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Media Metadata</string>
+    <string name="app_subtitle">Bekijk en bewerk titel, artiest, album, genre en jaar</string>
+
+    <string name="open_file">Bestand openen</string>
+    <string name="read_again">Opnieuw lezen</string>
+    <string name="save">Opslaan</string>
+    <string name="metadata">METADATA</string>
+
+    <string name="field_title">Titel</string>
+    <string name="field_artist">Artiest</string>
+    <string name="field_album">Album</string>
+    <string name="field_genre">Genre</string>
+    <string name="field_year">Jaar</string>
+    <string name="field_comment">Commentaar / labels</string>
+
+    <string name="hint_title">Naam van het fragment</string>
+    <string name="hint_artist">Maker of artiest</string>
+    <string name="hint_album">Album of serie</string>
+    <string name="hint_genre">Bijv. Documentaire</string>
+    <string name="hint_year">Bijv. 2026</string>
+    <string name="hint_comment">Bijv. klant, locatie, versie</string>
+
+    <string name="hint_open">Open een video of audiobestand om te beginnen</string>
+    <string name="status_ready">Nog geen bestand geopend.</string>
+</resources>
