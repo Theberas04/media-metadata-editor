@@ -114,9 +114,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          TAG=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName' || true)
+          # De Windows-workflow publiceert de release met de commit-hash in de
+          # tag. Zoeken we die, dan komt de APK gegarandeerd bij de juiste
+          # release en niet bij een oudere (of een nieuwere Android-release die
+          # de updater-URL zou overnemen).
+          SHA=$(git rev-parse HEAD)
+          TAG=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 40 --json tagName \
+                --jq ".[] | select(.tagName | endswith(\"$SHA\")) | .tagName" | head -1)
           if [ -z "$TAG" ]; then
-            echo "nog geen release gevonden; de APK blijft als artifact staan"
+            echo "nog geen release voor commit $SHA; de APK blijft als artifact staan"
             exit 0
           fi
           VERSION=$(tr -d '\r\n' < version.txt)
