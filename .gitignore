@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.spec
+build/
+dist/
+
+# Gegenereerde demo-media en frames
+.demo/
+
+# Lokale rommel
+.DS_Store
+Thumbs.db
+selftest.json
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/release.p12
+android/*.keystore
+android/*.jks

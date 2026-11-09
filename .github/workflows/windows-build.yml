@@ -1,0 +1,137 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'android/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: x64
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller pillow
+
+      - name: Run tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m unittest discover -s tests -v
+          python -m compileall -q mediameta main.py tools
+
+      - name: Build Windows app
+        shell: pwsh
+        run: |
+          cmd /c build_windows.bat
+          if ($LASTEXITCODE -ne 0) { throw "Windows build failed with exit code $LASTEXITCODE" }
+
+      - name: Verify package contents and Qt multimedia plugins
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:GITHUB_WORKSPACE 'dist\Media Metadata Editor'
+          $exe  = Join-Path $root 'Media Metadata Editor.exe'
+          if (!(Test-Path $exe)) { throw "Build did not produce the executable" }
+          if ((Get-Item $exe).Length -lt 100000) { throw "Executable is suspiciously small" }
+          foreach ($pattern in @('qtaudio_windows.dll', 'dsengine.dll', 'wmfengine.dll')) {
+            $found = Get-ChildItem -Path $root -Recurse -Filter $pattern -ErrorAction SilentlyContinue
+            if (!$found) { Write-Host "::warning::plugin $pattern niet gevonden in de build" }
+            else { Write-Host "plugin ok: $($found[0].FullName)" }
+          }
+          $audio = Get-ChildItem -Path $root -Recurse -Filter 'qtaudio_windows.dll' -ErrorAction SilentlyContinue
+          if (!$audio) { throw "Qt audio-plugin ontbreekt: geluid zou niet werken" }
+          $media = Get-ChildItem -Path $root -Recurse -Include 'dsengine.dll','wmfengine.dll' -ErrorAction SilentlyContinue
+          if (!$media) { throw "Qt mediaservice-plugin ontbreekt: afspelen zou niet werken" }
+          if (!(Test-Path (Join-Path $root 'branding\logo.png'))) { throw "logo ontbreekt in de build" }
+          Get-ChildItem -Path $root -Recurse -Filter 'ffmpeg*.exe' | ForEach-Object { Write-Host "ffmpeg: $($_.FullName) ($([math]::Round($_.Length/1MB,1)) MB)" }
+
+      - name: Self-test the packaged exe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'dist\Media Metadata Editor\Media Metadata Editor.exe'
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $out = Join-Path $env:GITHUB_WORKSPACE 'selftest.json'
+          $proc = Start-Process -FilePath $exe -ArgumentList '--selftest','--out',"`"$out`"" -PassThru -Wait
+          Write-Host "exitcode: $($proc.ExitCode)"
+          if (!(Test-Path $out)) { throw "De self-test schreef geen rapport; de app start dus niet" }
+          $report = Get-Content $out -Raw | ConvertFrom-Json
+          Write-Host ($report | ConvertTo-Json -Depth 4)
+          if ($report.selftest -ne 'OK') { throw "Self-test niet OK" }
+          if ($proc.ExitCode -ne 0) { throw "Self-test exitcode $($proc.ExitCode)" }
+
+      - name: Package and verify distribution
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:GITHUB_WORKSPACE 'dist\Media Metadata Editor'
+          $package = Join-Path $env:GITHUB_WORKSPACE 'MediaMetadataEditor-Windows.zip'
+          Compress-Archive -Path (Join-Path $root '*') -DestinationPath $package -CompressionLevel Optimal -Force
+          python -c "import sys,zipfile; p=sys.argv[1]; z=zipfile.ZipFile(p); assert z.testzip() is None; names=[n for n in z.namelist() if n.endswith('.exe')]; print('entries:', len(z.namelist())); print('exes:', names); assert any(n.endswith('Media Metadata Editor.exe') for n in names), 'exe ontbreekt'; print('size MB:', round(sum(i.file_size for i in z.infolist())/1048576,1))" $package
+
+      - name: Write version.json for the updater
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content version.txt -Raw).Trim()
+          $hash = (Get-FileHash MediaMetadataEditor-Windows.zip -Algorithm SHA256).Hash.ToLower()
+          $manifest = [ordered]@{
+            version   = $version
+            url       = "https://github.com/${{ github.repository }}/releases/latest/download/MediaMetadataEditor-Windows.zip"
+            sha256    = $hash
+            notes     = "Automatische build van $(Get-Date -Format 'yyyy-MM-dd') (commit ${{ github.sha }})."
+          }
+          $manifest | ConvertTo-Json | Set-Content -Path version.json -Encoding utf8
+          Get-Content version.json
+          Write-Host "sha256: $hash"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: MediaMetadataEditor-Windows
+          path: |
+            MediaMetadataEditor-Windows.zip
+            version.json
+            version.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish release (latest)
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}-${{ github.sha }}
+          name: "Media Metadata Editor ${{ github.run_number }}"
+          body: |
+            Windows-build van commit `${{ github.sha }}`.
+            Download `MediaMetadataEditor-Windows.zip`, pak uit en start
+            `Media Metadata Editor.exe`. De app controleert zelf op updates.
+          files: |
+            MediaMetadataEditor-Windows.zip
+            version.json
+          make_latest: true
+          fail_on_unmatched_files: true

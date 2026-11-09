@@ -1,0 +1,505 @@
+"""Kern: media uitlezen en metadata wegschrijven met ffmpeg/ffprobe.
+
+Deze module heeft geen Qt nodig en is daarom los te testen (zie tests/test_core.py).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable, Optional
+
+AUDIO_EXTS = (
+    ".mp3", ".wav", ".flac", ".aac", ".ogg", ".oga", ".opus",
+    ".wma", ".m4a", ".aiff", ".aif", ".alac",
+)
+VIDEO_EXTS = (
+    ".mp4", ".m4v", ".avi", ".mov", ".mkv", ".mxf",
+    ".webm", ".wmv", ".mpg", ".mpeg", ".ts", ".flv",
+)
+SUPPORTED_EXTS = tuple(sorted(set(AUDIO_EXTS) | set(VIDEO_EXTS)))
+
+# UI-veld -> ffmpeg-tagnaam.  'jaar' gaat naar 'date', dat is de tag die
+# MP4/MKV/MP3 (TDRC) allemaal begrijpen; ffmpeg leest hem ook weer als jaar.
+FIELDS = ("title", "artist", "album", "genre", "year", "comment")
+FIELD_TAGS = {
+    "title": "title",
+    "artist": "artist",
+    "album": "album",
+    "genre": "genre",
+    "year": "date",
+    "comment": "comment",
+}
+
+# Containers waar +faststart zin heeft (moov vooraan, sneller starten).
+_FASTSTART_EXTS = (".mp4", ".m4v", ".m4a", ".mov", ".3gp")
+
+_CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+
+
+class FFmpegMissing(RuntimeError):
+    """ffmpeg is niet gevonden; de app kan dan niets met metadata."""
+
+
+class MediaError(RuntimeError):
+    """Het mediabestand kon niet gelezen of geschreven worden."""
+
+
+@dataclass
+class MediaInfo:
+    path: str
+    duration_ms: int = 0
+    size_bytes: int = 0
+    format_name: str = ""
+    bit_rate: int = 0
+    video_codec: str = ""
+    audio_codec: str = ""
+    width: int = 0
+    height: int = 0
+    tags: dict = field(default_factory=dict)
+    probe_source: str = ""
+
+    @property
+    def is_video(self) -> bool:
+        return bool(self.video_codec) or self.height > 0
+
+    @property
+    def kind(self) -> str:
+        return "Video" if self.is_video else "Audio"
+
+    @property
+    def resolution(self) -> str:
+        if self.width and self.height:
+            return f"{self.width}x{self.height}"
+        return ""
+
+    def tag(self, name: str) -> str:
+        """Tag opvragen met de ffmpeg-naam, hoofdletterongevoelig."""
+        wanted = FIELD_TAGS.get(name, name).lower()
+        for key, value in self.tags.items():
+            if key.lower() == wanted:
+                return str(value)
+        return ""
+
+    def fields(self) -> dict:
+        """De zes UI-velden als platte dict."""
+        return {name: self.tag(name) for name in FIELDS}
+
+    def summary(self) -> str:
+        bits = [self.kind]
+        if self.resolution:
+            bits.append(self.resolution)
+        codec = self.video_codec or self.audio_codec
+        if codec:
+            bits.append(codec)
+        if self.duration_ms:
+            bits.append(format_duration(self.duration_ms))
+        if self.size_bytes:
+            bits.append(human_size(self.size_bytes))
+        return "  ·  ".join(bits)
+
+
+# --------------------------------------------------------------------------- #
+# Hulpmiddelen zoeken
+# --------------------------------------------------------------------------- #
+
+def _bundled_dirs() -> list[Path]:
+    """Mappen waar ffmpeg/ffprobe kan staan die bij de app horen."""
+    dirs: list[Path] = []
+    if getattr(sys, "frozen", False):
+        dirs.append(Path(sys.executable).resolve().parent)
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            dirs.append(Path(meipass))
+    here = Path(__file__).resolve().parent
+    dirs += [here.parent, here.parent / "vendor", here.parent / "vendor" / "ffmpeg", here / "bin"]
+    # imageio-ffmpeg levert een ffmpeg-binary mee in de wheel (geen ffprobe).
+    try:
+        import imageio_ffmpeg  # type: ignore
+
+        dirs.append(Path(imageio_ffmpeg.get_ffmpeg_exe()).parent)
+    except Exception:
+        pass
+    return dirs
+
+
+def _find_tool(name: str) -> Optional[str]:
+    env = os.environ.get(f"MEDIA_META_{name.upper()}")
+    if env and Path(env).is_file():
+        return str(Path(env))
+    exe = f"{name}.exe" if sys.platform == "win32" else name
+    for directory in _bundled_dirs():
+        candidate = directory / exe
+        if candidate.is_file():
+            return str(candidate)
+    found = shutil.which(name)
+    if found:
+        return found
+    if sys.platform == "win32":
+        for base in (r"C:\ffmpeg\bin", r"C:\Program Files\ffmpeg\bin"):
+            candidate = Path(base) / exe
+            if candidate.is_file():
+                return str(candidate)
+    if name == "ffmpeg":
+        try:
+            import imageio_ffmpeg  # type: ignore
+
+            return imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            pass
+    return None
+
+
+_ffmpeg_cache: dict[str, Optional[str]] = {}
+
+
+def find_ffmpeg() -> str:
+    """Pad naar ffmpeg; raises FFmpegMissing als hij nergens staat."""
+    if "ffmpeg" not in _ffmpeg_cache:
+        _ffmpeg_cache["ffmpeg"] = _find_tool("ffmpeg")
+    path = _ffmpeg_cache["ffmpeg"]
+    if not path:
+        raise FFmpegMissing(
+            "ffmpeg is niet gevonden. Installeer ffmpeg en zet hem in je PATH, "
+            "of plaats ffmpeg.exe naast de applicatie."
+        )
+    return path
+
+
+def find_ffprobe() -> Optional[str]:
+    """Pad naar ffprobe of None (dan valt de app terug op ffmpeg)."""
+    if "ffprobe" not in _ffmpeg_cache:
+        _ffmpeg_cache["ffprobe"] = _find_tool("ffprobe")
+    return _ffmpeg_cache["ffprobe"]
+
+
+def reset_tool_cache() -> None:
+    _ffmpeg_cache.clear()
+
+
+def is_supported(path: str | os.PathLike) -> bool:
+    return Path(path).suffix.lower() in SUPPORTED_EXTS
+
+
+# --------------------------------------------------------------------------- #
+# Weergave-hulpjes
+# --------------------------------------------------------------------------- #
+
+def format_duration(ms: int) -> str:
+    """Milliseconden -> mm:ss, of uu:mm:ss bij een uur of langer."""
+    if ms is None or ms < 0:
+        ms = 0
+    total = int(ms) // 1000
+    hours, rest = divmod(total, 3600)
+    minutes, seconds = divmod(rest, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def human_size(num_bytes: int) -> str:
+    value = float(num_bytes or 0)
+    for unit in ("B", "kB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}".replace(".0 ", " ")
+        value /= 1024.0
+    return f"{value:.1f} TB"
+
+
+def _ffmetadata_unescape(value: str) -> str:
+    """Keert de escaping van het ffmetadata-formaat terug."""
+    out: list[str] = []
+    i = 0
+    while i < len(value):
+        char = value[i]
+        if char == "\\" and i + 1 < len(value):
+            out.append(value[i + 1])
+            i += 2
+            continue
+        out.append(char)
+        i += 1
+    return "".join(out)
+
+
+def parse_ffmetadata(text: str) -> dict:
+    """Parseert de uitvoer van `ffmpeg -f ffmetadata -` naar een tag-dict."""
+    tags: dict[str, str] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(";") or line.startswith("#") or line.startswith("["):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        tags[key.strip().lower()] = _ffmetadata_unescape(value.strip())
+    return tags
+
+
+# --------------------------------------------------------------------------- #
+# Uitlezen
+# --------------------------------------------------------------------------- #
+
+def _run(args: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
+            timeout=timeout,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+    except FileNotFoundError as exc:
+        raise FFmpegMissing(str(exc)) from exc
+
+
+def probe(path: str | os.PathLike) -> MediaInfo:
+    """Leest duur, formaat, streams en tags van een mediabestand."""
+    path = Path(path)
+    if not path.is_file():
+        raise MediaError(f"Bestand niet gevonden: {path}")
+    info = MediaInfo(path=str(path), size_bytes=path.stat().st_size)
+
+    ffprobe = find_ffprobe()
+    if ffprobe:
+        proc = _run([
+            ffprobe, "-v", "quiet", "-print_format", "json",
+            "-show_format", "-show_streams", str(path),
+        ])
+        if proc.returncode == 0 and proc.stdout.strip():
+            try:
+                data = json.loads(proc.stdout)
+            except json.JSONDecodeError:
+                data = None
+            if data:
+                _fill_from_ffprobe(info, data)
+                info.probe_source = "ffprobe"
+                return info
+
+    _fill_from_ffmpeg(info, path)
+    info.probe_source = "ffmpeg"
+    return info
+
+
+def _fill_from_ffprobe(info: MediaInfo, data: dict) -> None:
+    fmt = data.get("format") or {}
+    info.format_name = fmt.get("format_name", "")
+    info.bit_rate = int(float(fmt.get("bit_rate") or 0))
+    duration = fmt.get("duration") or 0
+    try:
+        info.duration_ms = int(float(duration) * 1000)
+    except (TypeError, ValueError):
+        info.duration_ms = 0
+    info.tags = {str(k).lower(): str(v) for k, v in (fmt.get("tags") or {}).items()}
+
+    for stream in data.get("streams") or []:
+        kind = stream.get("codec_type")
+        if kind == "video" and not info.video_codec:
+            # mjpeg in een mp3 is cover-art: dat is geen echte videostream.
+            if (stream.get("disposition") or {}).get("attached_pic"):
+                continue
+            info.video_codec = stream.get("codec_name", "")
+            info.width = int(stream.get("width") or 0)
+            info.height = int(stream.get("height") or 0)
+            if not info.duration_ms:
+                try:
+                    info.duration_ms = int(float(stream.get("duration") or 0) * 1000)
+                except (TypeError, ValueError):
+                    pass
+        elif kind == "audio" and not info.audio_codec:
+            info.audio_codec = stream.get("codec_name", "")
+
+
+_DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d{2}):(\d{2})\.(\d{1,3})")
+_VIDEO_RE = re.compile(r"Stream #\d+:\d+.*?: Video: (\w+).*?(\d{2,5})x(\d{2,5})")
+_AUDIO_RE = re.compile(r"Stream #\d+:\d+.*?: Audio: (\w+)")
+
+
+def _fill_from_ffmpeg(info: MediaInfo, path: Path) -> None:
+    """Terugvalpad zonder ffprobe: ffmpeg levert de tags en het info-blok."""
+    ffmpeg = find_ffmpeg()
+
+    tag_proc = _run([ffmpeg, "-hide_banner", "-nostdin", "-v", "quiet",
+                     "-i", str(path), "-f", "ffmetadata", "-"])
+    if tag_proc.returncode == 0 and tag_proc.stdout:
+        info.tags = parse_ffmetadata(tag_proc.stdout)
+
+    info_proc = _run([ffmpeg, "-hide_banner", "-nostdin", "-i", str(path)])
+    stderr = info_proc.stderr or ""
+
+    match = _DURATION_RE.search(stderr)
+    if match:
+        hours, minutes, seconds, frac = match.groups()
+        info.duration_ms = (
+            int(hours) * 3600000 + int(minutes) * 60000
+            + int(seconds) * 1000 + int(frac.ljust(3, "0"))
+        )
+    video = _VIDEO_RE.search(stderr)
+    if video:
+        info.video_codec, width, height = video.group(1), int(video.group(2)), int(video.group(3))
+        info.width, info.height = width, height
+    audio = _AUDIO_RE.search(stderr)
+    if audio:
+        info.audio_codec = audio.group(1)
+
+    fmt_match = re.search(r"Input #0,\s*([^,]+),", stderr)
+    if fmt_match:
+        info.format_name = fmt_match.group(1).strip()
+    if not info.duration_ms:
+        raise MediaError(
+            "Kon dit bestand niet lezen met ffmpeg. Is het een geldig mediabestand?"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Wegschrijven
+# --------------------------------------------------------------------------- #
+
+def _metadata_args(values: dict) -> list[str]:
+    args: list[str] = []
+    for name in FIELDS:
+        tag = FIELD_TAGS[name]
+        value = (values.get(name) or "").replace("\x00", "").strip()
+        args += ["-metadata", f"{tag}={value}"]
+    return args
+
+
+def write_tags(
+    source: str | os.PathLike,
+    dest: Optional[str | os.PathLike] = None,
+    values: Optional[dict] = None,
+    on_progress: Optional[Callable[[float], None]] = None,
+) -> MediaInfo:
+    """Schrijft metadata weg zonder opnieuw te encoderen (-c copy).
+
+    `dest` None of gelijk aan `source` betekent: het bronbestand vervangen.
+    Er wordt altijd eerst naar een tijdelijk bestand geschreven, zodat een
+    mislukte schrijfactie het origineel niet beschadigt.
+    """
+    source = Path(source)
+    values = values or {}
+    target = Path(dest) if dest else source
+    if not source.is_file():
+        raise MediaError(f"Bestand niet gevonden: {source}")
+
+    ffmpeg = find_ffmpeg()
+    info = probe(source)
+    duration_ms = info.duration_ms or 0
+
+    in_place = target.resolve() == source.resolve()
+    suffix = target.suffix or source.suffix
+    tmp = target.with_name(f"{target.stem}.mmtmp{suffix}")
+    if not in_place:
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+    args = [
+        ffmpeg, "-hide_banner", "-nostdin", "-y",
+        "-loglevel", "error",
+        "-i", str(source),
+        "-map", "0", "-map_metadata", "0", "-c", "copy",
+        *_metadata_args(values),
+    ]
+    if suffix.lower() in _FASTSTART_EXTS:
+        args += ["-movflags", "+faststart"]
+    args += ["-progress", "pipe:1", "-nostats", str(tmp)]
+
+    started = time.time()
+    proc = subprocess.Popen(
+        args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, errors="replace", creationflags=_CREATE_NO_WINDOW,
+    )
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        line = line.strip()
+        if line.startswith("out_time=") and on_progress and duration_ms:
+            stamp = line.split("=", 1)[1]
+            seconds = _parse_time(stamp)
+            if seconds is not None:
+                on_progress(min(0.999, (seconds * 1000) / duration_ms))
+        elif line == "progress=end" and on_progress:
+            on_progress(1.0)
+    stderr = proc.stderr.read() if proc.stderr else ""
+    code = proc.wait()
+
+    if code != 0 or not tmp.exists() or tmp.stat().st_size == 0:
+        tmp.unlink(missing_ok=True)
+        tail = (stderr or "").strip().splitlines()[-6:]
+        raise MediaError("ffmpeg kon het bestand niet wegschrijven:\n" + "\n".join(tail))
+
+    os.replace(tmp, target)
+    elapsed = time.time() - started
+
+    result = probe(target)
+    result.tags["_elapsed_s"] = f"{elapsed:.2f}"
+    return result
+
+
+def _parse_time(stamp: str) -> Optional[float]:
+    match = re.match(r"(\d+):(\d{2}):(\d{2})\.(\d+)", stamp)
+    if not match:
+        return None
+    hours, minutes, seconds, frac = match.groups()
+    return int(hours) * 3600 + int(minutes) * 60 + int(seconds) + float("0." + frac)
+
+
+def tags_match(expected: dict, info: MediaInfo) -> dict:
+    """Welke van de opgegeven velden staan goed in het weggeschreven bestand?"""
+    result: dict[str, bool] = {}
+    for name in FIELDS:
+        if name not in expected:
+            continue
+        want = (expected.get(name) or "").strip()
+        got = info.tag(name).strip()
+        if not want:
+            result[name] = got == ""
+        else:
+            result[name] = got.lower() == want.lower() or want.lower() in got.lower()
+    return result
+
+
+def poster_image(
+    source: str | os.PathLike,
+    target: str | os.PathLike,
+    position_ms: Optional[int] = None,
+) -> Optional[str]:
+    """Pakt één frame uit een mediabestand als preview-afbeelding (PNG).
+
+    Bij audio met cover-art werkt `-ss` niet (de zoekactie slaat de
+    afbeelding over), dus dan proberen we het zonder seek.
+    """
+    source, target = Path(source), Path(target)
+    try:
+        info = probe(source)
+    except (MediaError, FFmpegMissing):
+        info = MediaInfo(path=str(source))
+    ffmpeg = find_ffmpeg()
+
+    if info.is_video:
+        if position_ms is None:
+            position_ms = min(1500, max(0, (info.duration_ms or 0) // 10))
+        attempts: list[Optional[float]] = [position_ms / 1000.0, 0.0]
+    else:
+        attempts = [None, 0.0]
+
+    for attempt in attempts:
+        args = [ffmpeg, "-hide_banner", "-nostdin", "-y", "-loglevel", "error"]
+        if attempt is not None:
+            args += ["-ss", f"{max(0.0, attempt):.3f}"]
+        args += [
+            "-i", str(source), "-frames:v", "1",
+            "-vf", "scale='min(960,iw)':-2", str(target),
+        ]
+        proc = _run(args, timeout=120)
+        if proc.returncode == 0 and target.exists() and target.stat().st_size > 0:
+            return str(target)
+    return None
