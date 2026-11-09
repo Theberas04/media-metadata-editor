@@ -91,42 +91,24 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $exe = Join-Path $env:GITHUB_WORKSPACE 'dist\Media Metadata Editor\Media Metadata Editor.exe'
           $out = Join-Path $env:GITHUB_WORKSPACE 'selftest.json'
-          Write-Host "platform-plugins:"
-          Get-ChildItem -Path (Join-Path $env:GITHUB_WORKSPACE 'dist') -Recurse -Filter 'q*.dll' |
-            Where-Object { $_.DirectoryName -like '*platforms*' } | ForEach-Object { Write-Host "  $($_.Name)" }
-
-          # De offscreen-plugin kan met QVideoWidget crashen; daarom proberen we
-          # eerst de gewone Windows-plugin en pas daarna offscreen.
-          $worked = $null
-          foreach ($platform in @('', 'offscreen')) {
-            Remove-Item $out -ErrorAction SilentlyContinue
-            if ($platform) { $env:QT_QPA_PLATFORM = $platform }
-            else { Remove-Item Env:QT_QPA_PLATFORM -ErrorAction SilentlyContinue }
-            $label = if ($platform) { $platform } else { 'standaard' }
-            Write-Host "self-test met platform: $label"
-            $env:MEDIA_META_HEADLESS = '1'
-            $proc = Start-Process -FilePath $exe -ArgumentList '--selftest','--out',"`"$out`"" -PassThru
-            if (-not $proc.WaitForExit(240000)) {
-              $proc.Kill()
-              Write-Host "  self-test liep vast en is afgebroken"
-              if (Test-Path $out) { Get-Content $out -Raw | Write-Host }
-              continue
-            }
-            Write-Host "  exitcode: $($proc.ExitCode)"
-            if ((Test-Path $out) -and $proc.ExitCode -eq 0) {
-              $worked = $label
-              break
-            }
-            if (Test-Path $out) {
-              Write-Host "  rapport:"
-              Get-Content $out -Raw | Write-Host
-            }
+          Remove-Item $out -ErrorAction SilentlyContinue
+          $env:MEDIA_META_HEADLESS = '1'
+          Remove-Item Env:QT_QPA_PLATFORM -ErrorAction SilentlyContinue
+          $proc = Start-Process -FilePath $exe -ArgumentList '--selftest','--out',"`"$out`"" -PassThru
+          if (-not $proc.WaitForExit(300000)) {
+            $proc.Kill()
+            if (Test-Path $out) { Get-Content $out -Raw | Write-Host }
+            throw "De self-test van de gebouwde app liep vast"
           }
-          if (-not $worked) { throw "De gebouwde app start niet (geen enkel platform werkte)" }
+          Write-Host "exitcode: $($proc.ExitCode)"
+          if (!(Test-Path $out)) { throw "De self-test schreef geen rapport" }
+          Get-Content $out -Raw | Write-Host
           $report = Get-Content $out -Raw | ConvertFrom-Json
-          Write-Host "self-test ok met platform '$worked'"
-          Write-Host ($report | ConvertTo-Json -Depth 4)
+          if ($proc.ExitCode -ne 0) { throw "Self-test exitcode $($proc.ExitCode)" }
           if ($report.selftest -ne 'OK') { throw "Self-test niet OK" }
+          if ($report.ui_save -ne $true) {
+            Write-Host "::warning::De GUI-opslagweg is op deze runner niet gemeten (kern-schrijfactie is wel gecontroleerd)"
+          }
           Copy-Item $out 'selftest-report.json' -Force
 
       - name: Package and verify distribution
