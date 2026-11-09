@@ -108,27 +108,23 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: APK ook op de laatste release zetten
+      - name: APK publiceren (eigen prerelease)
         if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          # De Windows-workflow publiceert de release met de commit-hash in de
-          # tag. Zoeken we die, dan komt de APK gegarandeerd bij de juiste
-          # release en niet bij een oudere (of een nieuwere Android-release die
-          # de updater-URL zou overnemen).
-          SHA=$(git rev-parse HEAD)
-          TAG=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 40 --json tagName \
-                --jq ".[] | select(.tagName | endswith(\"$SHA\")) | .tagName" | head -1)
-          if [ -z "$TAG" ]; then
-            echo "nog geen release voor commit $SHA; de APK blijft als artifact staan"
-            exit 0
-          fi
+          # Bewust een prerelease: die telt niet mee voor /releases/latest, dus de
+          # updater van de Windows-versie blijft naar de juiste release wijzen.
+          TAG="android-${GITHUB_RUN_NUMBER}"
           VERSION=$(tr -d '\r\n' < version.txt)
-          cp android/app/build/outputs/apk/release/app-release.apk "MediaMetadata-Android-$VERSION.apk"
-          gh release upload "$TAG" "MediaMetadata-Android-$VERSION.apk" --repo "$GITHUB_REPOSITORY" --clobber
-          echo "APK toegevoegd aan release $TAG"
+          ASSET="MediaMetadata-Android-$VERSION.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk "$ASSET"
+          NOTES="Ondertekende APK van commit ${GITHUB_SHA}."
+          gh release create "$TAG" "$ASSET" --repo "$GITHUB_REPOSITORY" \
+            --title "Android-APK build ${GITHUB_RUN_NUMBER}" --notes "$NOTES" --prerelease \
+            || gh release upload "$TAG" "$ASSET" --repo "$GITHUB_REPOSITORY" --clobber
+          echo "APK gepubliceerd als prerelease $TAG"
 
       - uses: actions/upload-artifact@v4
         with:
