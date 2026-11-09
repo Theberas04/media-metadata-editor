@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,6 +43,13 @@ FIELD_TAGS = {
 _FASTSTART_EXTS = (".mp4", ".m4v", ".m4a", ".mov", ".3gp")
 
 _CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+
+# Hoe lang mag het wegschrijven duren voordat we ffmpeg afbreken?
+WRITE_TIMEOUT_S = 3600
+
+# Eén schrijfactie tegelijk: twee ffmpeg-processen op hetzelfde bestand is vragen
+# om problemen.
+_write_lock = threading.Lock()
 
 
 class FFmpegMissing(RuntimeError):
@@ -385,6 +393,11 @@ def write_tags(
     `dest` None of gelijk aan `source` betekent: het bronbestand vervangen.
     Er wordt altijd eerst naar een tijdelijk bestand geschreven, zodat een
     mislukte schrijfactie het origineel niet beschadigt.
+
+    De voortgang komt uit een voortgangsbestand in plaats van uit `pipe:1`.
+    Een pijp die niet leegloopt laat ffmpeg (en dus de app) op Windows
+    oneindig wachten; een bestand kan dat niet. De foutuitvoer wordt door een
+    aparte thread leeggemaakt om dezelfde reden.
     """
     source = Path(source)
     values = values or {}
@@ -392,6 +405,16 @@ def write_tags(
     if not source.is_file():
         raise MediaError(f"Bestand niet gevonden: {source}")
 
+    with _write_lock:
+        return _write_tags(source, target, values, on_progress)
+
+
+def _write_tags(
+    source: Path,
+    target: Path,
+    values: dict,
+    on_progress: Optional[Callable[[float], None]],
+) -> MediaInfo:
     ffmpeg = find_ffmpeg()
     info = probe(source)
     duration_ms = info.duration_ms or 0
@@ -399,8 +422,11 @@ def write_tags(
     in_place = target.resolve() == source.resolve()
     suffix = target.suffix or source.suffix
     tmp = target.with_name(f"{target.stem}.mmtmp{suffix}")
+    progress_file = tmp.with_name(tmp.name + ".progress")
     if not in_place:
         target.parent.mkdir(parents=True, exist_ok=True)
+    tmp.unlink(missing_ok=True)
+    progress_file.unlink(missing_ok=True)
 
     args = [
         ffmpeg, "-hide_banner", "-nostdin", "-y",
@@ -411,37 +437,90 @@ def write_tags(
     ]
     if suffix.lower() in _FASTSTART_EXTS:
         args += ["-movflags", "+faststart"]
-    args += ["-progress", "pipe:1", "-nostats", str(tmp)]
+    args += ["-progress", str(progress_file), "-nostats", str(tmp)]
 
     started = time.time()
     proc = subprocess.Popen(
-        args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, errors="replace", creationflags=_CREATE_NO_WINDOW,
+        args,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        errors="replace",
+        creationflags=_CREATE_NO_WINDOW,
     )
-    assert proc.stdout is not None
-    for line in proc.stdout:
-        line = line.strip()
-        if line.startswith("out_time=") and on_progress and duration_ms:
-            stamp = line.split("=", 1)[1]
-            seconds = _parse_time(stamp)
-            if seconds is not None:
-                on_progress(min(0.999, (seconds * 1000) / duration_ms))
-        elif line == "progress=end" and on_progress:
-            on_progress(1.0)
-    stderr = proc.stderr.read() if proc.stderr else ""
-    code = proc.wait()
+    stderr_chunks: list[str] = []
 
+    def drain_stderr() -> None:
+        try:
+            if proc.stderr is not None:
+                stderr_chunks.append(proc.stderr.read() or "")
+        except Exception:  # noqa: BLE001 - de lezer mag nooit de app laten vallen
+            pass
+
+    reader = threading.Thread(target=drain_stderr, daemon=True)
+    reader.start()
+
+    deadline = started + WRITE_TIMEOUT_S
+    code: Optional[int] = None
+    try:
+        while True:
+            code = proc.poll()
+            if code is not None:
+                break
+            if time.time() > deadline:
+                proc.kill()
+                proc.wait()
+                raise MediaError(
+                    f"ffmpeg deed er langer dan {WRITE_TIMEOUT_S // 60} minuten over "
+                    "en is afgebroken. Het originele bestand is niet aangepast."
+                )
+            if on_progress and duration_ms:
+                _report_progress(progress_file, duration_ms, on_progress)
+            time.sleep(0.1)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        progress_file.unlink(missing_ok=True)
+        raise
+    finally:
+        reader.join(timeout=2)
+
+    stderr = "".join(stderr_chunks)
+    progress_file.unlink(missing_ok=True)
     if code != 0 or not tmp.exists() or tmp.stat().st_size == 0:
         tmp.unlink(missing_ok=True)
         tail = (stderr or "").strip().splitlines()[-6:]
         raise MediaError("ffmpeg kon het bestand niet wegschrijven:\n" + "\n".join(tail))
 
     os.replace(tmp, target)
+    if on_progress:
+        on_progress(1.0)
     elapsed = time.time() - started
 
     result = probe(target)
     result.tags["_elapsed_s"] = f"{elapsed:.2f}"
     return result
+
+
+def _report_progress(
+    progress_file: Path,
+    duration_ms: int,
+    on_progress: Callable[[float], None],
+) -> None:
+    """Leest het laatste out_time uit het voortgangsbestand van ffmpeg."""
+    try:
+        text = progress_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return
+    stamp = None
+    for line in text.splitlines():
+        if line.startswith("out_time="):
+            stamp = line.split("=", 1)[1]
+    if not stamp:
+        return
+    seconds = _parse_time(stamp)
+    if seconds is None:
+        return
+    on_progress(max(0.0, min(0.999, (seconds * 1000.0) / duration_ms)))
 
 
 def _parse_time(stamp: str) -> Optional[float]:

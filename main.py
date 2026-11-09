@@ -121,11 +121,15 @@ def selftest() -> int:
     window.edits["title"].setText("Zelftest na opslaan")
     window.edits["album"].setText("Controle")
     window.save_metadata(save_as=False)
-    deadline = time.time() + 60
+    deadline = time.time() + 90
     while window._worker is not None and time.time() < deadline:
         app.processEvents()
         time.sleep(0.02)
-    assert window._worker is None, "opslaan kwam niet klaar"
+    if window._worker is not None:
+        # Een lopende QThread houdt het proces bij het afsluiten tegen; daarom
+        # hier hard stoppen met een duidelijke melding in plaats van hangen.
+        log("selftest: TIMEOUT - opslaan kwam niet binnen 90 seconden klaar")
+        os._exit(3)
 
     info = core.probe(str(sample))
     assert info.tag("title") == "Zelftest na opslaan", f"titel niet weggeschreven: {info.tag('title')!r}"
