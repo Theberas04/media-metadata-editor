@@ -45,6 +45,11 @@ LINE = "#e2e8f0"
 ACCENT = "#1d4ed8"
 PLAYER_BG = "#0b1220"
 
+# In CI (of een andere omgeving zonder scherm) mogen er geen modale vensters
+# verschijnen: die wachten op een klik die nooit komt. Meldingen gaan dan naar
+# de statusregel.
+HEADLESS = os.environ.get("MEDIA_META_HEADLESS") == "1"
+
 STYLESHEET = f"""
 QWidget {{
     font-family: "Segoe UI", "Noto Sans", "DejaVu Sans", sans-serif;
@@ -664,8 +669,8 @@ class MainWindow(QWidget):
         if not path or not Path(path).is_file():
             return
         if not core.is_supported(path):
-            QMessageBox.warning(
-                self, "Bestandstype niet ondersteund",
+            self.notify(
+                "warning", "Bestandstype niet ondersteund",
                 "Dit bestandstype wordt niet ondersteund.\n"
                 f"Wel: {', '.join(core.SUPPORTED_EXTS)}",
             )
@@ -735,7 +740,7 @@ class MainWindow(QWidget):
             self.info = core.probe(self.media_path)
         except (core.FFmpegMissing, core.MediaError) as exc:
             self.set_status(str(exc), error=True)
-            QMessageBox.critical(self, "Kan metadata niet lezen", str(exc))
+            self.notify("critical", "Kan metadata niet lezen", str(exc))
             return
         self.set_values(self.info.fields())
         self.info_label.setText(self.info.summary())
@@ -807,8 +812,8 @@ class MainWindow(QWidget):
         self._sync_enabled()
 
     def _show_save_dialog(self, missing: list[str]) -> None:
-        QMessageBox.information(
-            self, "Metadata opgeslagen",
+        self.notify(
+            "info", "Metadata opgeslagen",
             "Het bestand is opgeslagen, maar deze velden kon de container niet opslaan:\n\n"
             + "\n".join(f"• {name}" for name in missing)
             + "\n\nDit ligt aan het bestandsformaat, niet aan de app.",
@@ -818,7 +823,7 @@ class MainWindow(QWidget):
         self._worker = None
         self.progress.hide()
         self.set_status("Opslaan mislukt.", error=True)
-        QMessageBox.critical(self, "Opslaan mislukt", message)
+        self.notify("critical", "Opslaan mislukt", message)
 
     def _set_busy(self, busy: bool) -> None:
         for widget in (self.save_btn, self.save_as_btn, self.read_btn, self.open_btn):
@@ -836,6 +841,28 @@ class MainWindow(QWidget):
     def set_status(self, text: str, error: bool = False) -> None:
         self.status_label.setText(text)
         self.status_label.setStyleSheet(f"color: {'#b91c1c' if error else MUTED}; font-size: 11px;")
+
+    def notify(self, kind: str, title: str, text: str) -> bool:
+        """Melding tonen — of alleen loggen als er geen scherm is (CI).
+
+        Zonder deze omweg blijft een modaal venster in een headless run eindeloos
+        op een klik wachten. Bij 'question' betekent de returnwaarde "ja".
+        """
+        if HEADLESS:
+            self.set_status(f"{title} — {' '.join(text.split())}", error=kind != "info")
+            return False
+        if kind == "question":
+            answer = QMessageBox.question(
+                self, title, text, QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+            )
+            return answer == QMessageBox.Yes
+        if kind == "critical":
+            QMessageBox.critical(self, title, text)
+        elif kind == "warning":
+            QMessageBox.warning(self, title, text)
+        else:
+            QMessageBox.information(self, title, text)
+        return True
 
     # ---------------------------------------------------------------- drop --
 
@@ -917,18 +944,17 @@ class MainWindow(QWidget):
         if not info:
             return
         notes = f"\n\n{info.notes}" if info.notes else ""
-        answer = QMessageBox.question(
-            self, "Bijwerken",
+        proceed = self.notify(
+            "question", "Bijwerken",
             f"Versie {info.latest} is beschikbaar (je hebt {VERSION}).{notes}\n\n"
             "Nu downloaden en installeren? De app sluit daarna af en start opnieuw.",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
         )
-        if answer != QMessageBox.Yes:
+        if not proceed:
             return
         if not updater.is_frozen():
-            QMessageBox.information(
-                self, "Bijwerken",
-                "Deze versie draait vanuit de broncode, niet als installatie.\n"
+            self.notify(
+                "info", "Bijwerken",
+                "Deze versie draait vanuit de broncode, niet als installatie. "
                 f"Download de nieuwe versie op github.com/{updater.REPO}/releases",
             )
             return
@@ -940,7 +966,7 @@ class MainWindow(QWidget):
         worker.done.connect(lambda path: self._install_update(path))
         worker.failed.connect(lambda message: (
             self._set_busy(False), self.set_status(message, error=True),
-            QMessageBox.critical(self, "Bijwerken mislukt", message),
+            self.notify("critical", "Bijwerken mislukt", message),
         ))
         self._worker = worker
         worker.start()
@@ -954,7 +980,7 @@ class MainWindow(QWidget):
                 updater.apply_update_posix(Path(zip_path), install_dir)
         except Exception as exc:  # noqa: BLE001
             self._set_busy(False)
-            QMessageBox.critical(self, "Bijwerken mislukt", str(exc))
+            self.notify("critical", "Bijwerken mislukt", str(exc))
             return
         self.set_status("Bijwerken gestart. De app sluit nu en start opnieuw.")
         QTimer.singleShot(400, QApplication.quit)

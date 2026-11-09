@@ -66,6 +66,7 @@ jobs:
         working-directory: android
         run: |
           set -e
+          echo "--- bestanden ---"
           test -s app/build/outputs/apk/debug/app-debug.apk
           test -s app/build/outputs/apk/release/app-release.apk
           for apk in app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/release/app-release.apk; do
@@ -73,14 +74,31 @@ jobs:
             unzip -l "$apk" | grep -q 'AndroidManifest.xml'
             unzip -l "$apk" | grep -q 'classes.dex'
           done
+          echo "--- ondertekening ---"
           APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | tail -1)
-          "$APKSIGNER" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk
-          "$APKSIGNER" verify --print-certs app/build/outputs/apk/release/app-release.apk | grep -q 'CN=Tom Werdens'
+          "$APKSIGNER" verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk 2>/dev/null | grep -E "Verified using|Signer #1 certificate DN"
+          "$APKSIGNER" verify --print-certs app/build/outputs/apk/release/app-release.apk 2>/dev/null | grep -q 'CN=Tom Werdens'
+          echo "--- manifest ---"
           AAPT=$(ls "$ANDROID_HOME"/build-tools/*/aapt | tail -1)
-          "$AAPT" dump badging app/build/outputs/apk/release/app-release.apk | grep -E "package:|launchable-activity|application-icon" | head -5
-          "$AAPT" dump badging app/build/outputs/apk/release/app-release.apk | grep -q "versionName='$(cat ../version.txt | tr -d '\r\n')'"
-          # De tag-klassen moeten echt in de dex zitten.
-          unzip -p app/build/outputs/apk/release/app-release.apk classes.dex | strings | grep -q "Lnl/werdens/mediameta/Mp4Tags;"
+          "$AAPT" dump badging app/build/outputs/apk/release/app-release.apk > badging.txt
+          grep -E "^package:|^launchable-activity:|^application-icon-" badging.txt
+          grep -q "versionName='$(tr -d '\r\n' < ../version.txt)'" badging.txt
+          grep -q "applicationId\|package: name='nl.werdens.mediameta'" badging.txt
+          echo "--- tag-klassen in de dex ---"
+          python3 - <<'PY'
+          import re, zipfile
+          for apk in ("app/build/outputs/apk/debug/app-debug.apk",
+                      "app/build/outputs/apk/release/app-release.apk"):
+              with zipfile.ZipFile(apk) as z:
+                  names = [n for n in z.namelist() if re.match(r"classes\d*\.dex", n)]
+                  assert names, f"geen dex in {apk}"
+                  blob = b"".join(z.read(n) for n in names)
+              for symbol in (b"Lnl/werdens/mediameta/Mp4Tags;",
+                             b"Lnl/werdens/mediameta/Mp3Tags;",
+                             b"Lnl/werdens/mediameta/MainActivity;"):
+                  assert symbol in blob, f"{symbol!r} ontbreekt in {apk}"
+              print(f"{apk}: tag-klassen aanwezig ({len(blob)//1024} kB dex)")
+          PY
           echo "sha256: $(sha256sum app/build/outputs/apk/release/app-release.apk | cut -d' ' -f1)"
 
       - uses: actions/upload-artifact@v4

@@ -22,6 +22,8 @@ def main() -> int:
             pass
 
     if "--selftest" in sys.argv:
+        # Geen modale vensters in een run zonder scherm; die wachten op een klik.
+        os.environ.setdefault("MEDIA_META_HEADLESS", "1")
         return selftest()
 
     from mediameta.ui import run

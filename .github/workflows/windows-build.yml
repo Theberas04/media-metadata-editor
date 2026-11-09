@@ -78,7 +78,9 @@ jobs:
           $exe = Join-Path $env:GITHUB_WORKSPACE 'dist\Media Metadata Editor\Media Metadata Editor.exe'
           $out = Join-Path $env:GITHUB_WORKSPACE 'imports.json'
           Remove-Item Env:QT_QPA_PLATFORM -ErrorAction SilentlyContinue
-          $proc = Start-Process -FilePath $exe -ArgumentList '--selftest','--imports-only','--out',"`"$out`"" -PassThru -Wait
+          $env:MEDIA_META_HEADLESS = '1'
+          $proc = Start-Process -FilePath $exe -ArgumentList '--selftest','--imports-only','--out',"`"$out`"" -PassThru
+          if (-not $proc.WaitForExit(120000)) { $proc.Kill(); throw "import-test liep vast" }
           Write-Host "exitcode: $($proc.ExitCode)"
           if (Test-Path $out) { Get-Content $out -Raw | Write-Host }
           if ($proc.ExitCode -ne 0) { throw "De verpakte exe kan de Qt-modules niet importeren" }
@@ -102,7 +104,14 @@ jobs:
             else { Remove-Item Env:QT_QPA_PLATFORM -ErrorAction SilentlyContinue }
             $label = if ($platform) { $platform } else { 'standaard' }
             Write-Host "self-test met platform: $label"
-            $proc = Start-Process -FilePath $exe -ArgumentList '--selftest','--out',"`"$out`"" -PassThru -Wait
+            $env:MEDIA_META_HEADLESS = '1'
+            $proc = Start-Process -FilePath $exe -ArgumentList '--selftest','--out',"`"$out`"" -PassThru
+            if (-not $proc.WaitForExit(240000)) {
+              $proc.Kill()
+              Write-Host "  self-test liep vast en is afgebroken"
+              if (Test-Path $out) { Get-Content $out -Raw | Write-Host }
+              continue
+            }
             Write-Host "  exitcode: $($proc.ExitCode)"
             if ((Test-Path $out) -and $proc.ExitCode -eq 0) {
               $worked = $label
