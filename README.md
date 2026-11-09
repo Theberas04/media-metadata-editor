@@ -1,5 +1,8 @@
 # Media Metadata Editor & Player
 
+[![Windows build](https://github.com/Theberas04/media-metadata-editor/actions/workflows/windows-build.yml/badge.svg)](https://github.com/Theberas04/media-metadata-editor/actions/workflows/windows-build.yml)
+[![Android APK](https://github.com/Theberas04/media-metadata-editor/actions/workflows/android-apk.yml/badge.svg)](https://github.com/Theberas04/media-metadata-editor/actions/workflows/android-apk.yml)
+
 Bekijk en bewerk metadata (titel, artiest, album, genre, jaar, commentaar) van
 video- en audiobestanden, met een speler eromheen. Windows-versie, Android-app
 en de broncode staan in deze repository.
@@ -29,7 +32,9 @@ te worden.
 ### Android
 
 Download de `app-release.apk` uit de laatste release en open hem op de telefoon.
-Zie [android/README.md](android/README.md) voor wat daar wel en niet kan.
+De app vraagt geen opslagmachtigingen: je kiest zelf een bestand. Op Android
+kunnen de tags van MP3, MP4, M4A en MOV aangepast worden; andere formaten zijn
+af te spelen en te lezen. Zie [android/README.md](android/README.md).
 
 ## Schermafbeeldingen
 

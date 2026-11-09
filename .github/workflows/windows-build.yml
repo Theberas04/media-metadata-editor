@@ -71,6 +71,18 @@ jobs:
           Write-Host "logo ok: $($logo[0].FullName)"
           Get-ChildItem -Path $root -Recurse -Filter 'ffmpeg*.exe' | ForEach-Object { Write-Host "ffmpeg: $($_.FullName) ($([math]::Round($_.Length/1MB,1)) MB)" }
 
+      - name: "Self-test 1: Qt-imports van de gebouwde exe"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'dist\Media Metadata Editor\Media Metadata Editor.exe'
+          $out = Join-Path $env:GITHUB_WORKSPACE 'imports.json'
+          Remove-Item Env:QT_QPA_PLATFORM -ErrorAction SilentlyContinue
+          $proc = Start-Process -FilePath $exe -ArgumentList '--selftest','--imports-only','--out',"`"$out`"" -PassThru -Wait
+          Write-Host "exitcode: $($proc.ExitCode)"
+          if (Test-Path $out) { Get-Content $out -Raw | Write-Host }
+          if ($proc.ExitCode -ne 0) { throw "De verpakte exe kan de Qt-modules niet importeren" }
+
       - name: Self-test the packaged exe
         shell: pwsh
         run: |

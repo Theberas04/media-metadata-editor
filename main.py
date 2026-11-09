@@ -33,10 +33,9 @@ def selftest() -> int:
     """Controleert de gebouwde app: ffmpeg, Qt, UI, metadata lezen én schrijven.
 
     De Windows-build is een --windowed exe zonder console, dus de uitslag gaat
-    naar een JSON-bestand (--out) én naar stdout als die er is.
+    naar een JSON-bestand (--out) én naar stdout als die er is. Elke stap wordt
+    direct weggeschreven, zodat een crash de laatste geslaagde stap achterlaat.
     """
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
     out_path = None
     if "--out" in sys.argv:
         index = sys.argv.index("--out")
@@ -47,19 +46,50 @@ def selftest() -> int:
     def log(message: str) -> None:
         lines.append(message)
         if sys.stdout is not None:
-            print(message, flush=True)
+            try:
+                print(message, flush=True)
+            except Exception:
+                pass
         if out_path:
-            # Direct wegschrijven: als de app hierna crasht, blijft het spoor staan.
             try:
                 out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
             except OSError:
                 pass
 
-    from PyQt5.QtWidgets import QApplication
+    log("selftest: start")
+    log(f"selftest: python {sys.version.split()[0]}, frozen={bool(getattr(sys, 'frozen', False))}")
+    log(f"selftest: QT_QPA_PLATFORM={os.environ.get('QT_QPA_PLATFORM', '(niet gezet)')}")
+
+    imports_only = "--imports-only" in sys.argv
+
+    # Stap voor stap importeren: dit is de plek waar een verpakte Qt-app het
+    # vaakst stil crasht, en dan wil je weten welke module het was.
+    try:
+        from PyQt5.QtCore import QT_VERSION_STR  # noqa: F401
+
+        log(f"selftest: import QtCore ok (Qt {QT_VERSION_STR})")
+        from PyQt5.QtWidgets import QApplication  # noqa: F401
+
+        log("selftest: import QtWidgets ok")
+        from PyQt5.QtMultimedia import QMediaPlayer  # noqa: F401
+
+        log("selftest: import QtMultimedia ok")
+        from PyQt5.QtMultimediaWidgets import QVideoWidget  # noqa: F401
+
+        log("selftest: import QtMultimediaWidgets ok")
+    except Exception as exc:  # noqa: BLE001
+        log(f"selftest: IMPORTFOUT {exc!r}")
+        return 1
+
+    if imports_only:
+        log('selftest: {"selftest": "OK", "mode": "imports-only"}')
+        return 0
 
     from mediameta import core
     from mediameta.ui import MainWindow
     from mediameta.version import VERSION
+
+    log("selftest: mediameta-modules geladen")
 
     log(f"selftest: versie {VERSION}")
     log(f"selftest: ffmpeg  = {core.find_ffmpeg()}")

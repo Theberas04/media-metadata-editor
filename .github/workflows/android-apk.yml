@@ -43,6 +43,12 @@ jobs:
         with:
           gradle-version: '8.7'
 
+      - name: ffmpeg installeren (nodig voor de JVM-tests)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          ffmpeg -version | head -1
+
       - name: Tag-laag testen op de JVM (echte mediabestanden)
         run: bash android/tests/run-jvm-tests.sh
 
