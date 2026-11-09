@@ -107,6 +107,14 @@ def selftest() -> int:
         check=True, capture_output=True,
     )
 
+    # Eerst de kern: kan deze build metadata wegschrijven en teruglezen?
+    probe_values = {"title": "Kerncontrole", "artist": "Hermes", "album": "Controle"}
+    core.write_tags(sample, None, probe_values)
+    core_info = core.probe(str(sample))
+    missing = [k for k, v in probe_values.items() if core_info.tag(k) != v]
+    assert not missing, f"kern-schrijfactie niet gelukt: {missing} ontbreekt"
+    log("selftest: kern-schrijfactie en teruglezen ok")
+
     app = QApplication([])  # noqa: F841 - houdt de UI in leven
     window = MainWindow(autoupdate=False)
     window.resize(1000, 800)
@@ -114,12 +122,12 @@ def selftest() -> int:
     window.open_path(str(sample))
     app.processEvents()
 
-    assert window.edits["title"].text() == "Zelftest", "metadata niet ingelezen"
+    assert window.edits["title"].text() == "Kerncontrole", "metadata niet ingelezen"
     assert window.edits["artist"].text() == "Hermes", "artiest niet ingelezen"
     log("selftest: UI gebouwd en metadata gelezen")
 
     window.edits["title"].setText("Zelftest na opslaan")
-    window.edits["album"].setText("Controle")
+    window.edits["album"].setText("Controle")  # noqa: E501
     window.save_metadata(save_as=False)
     deadline = time.time() + 90
     while window._worker is not None and time.time() < deadline:

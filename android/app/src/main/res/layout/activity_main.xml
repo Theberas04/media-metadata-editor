@@ -19,10 +19,11 @@
         android:paddingBottom="12dp">
 
         <ImageView
-            android:layout_width="36dp"
-            android:layout_height="36dp"
-            android:src="@mipmap/ic_launcher"
-            android:contentDescription="@string/app_name" />
+            android:layout_width="wrap_content"
+            android:layout_height="30dp"
+            android:adjustViewBounds="true"
+            android:src="@drawable/werdens_logo"
+            android:contentDescription="Werdens Media" />
 
         <LinearLayout
             android:layout_width="0dp"

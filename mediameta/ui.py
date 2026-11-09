@@ -345,13 +345,13 @@ class MainWindow(QWidget):
         header = QHBoxLayout()
         header.setSpacing(12)
 
+        # Linksboven het logo van Werdens Media.
         self.logo_label = QLabel()
-        self.logo_label.setFixedSize(42, 42)
-        logo_path = _asset("branding", "logo.png")
+        logo_path = _asset("branding", "werdens-media-logo.png") or _asset("branding", "logo.png")
         if logo_path:
-            self.logo_label.setPixmap(
-                QPixmap(logo_path).scaled(42, 42, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            )
+            pixmap = QPixmap(logo_path).scaledToHeight(38, Qt.SmoothTransformation)
+            self.logo_label.setPixmap(pixmap)
+            self.logo_label.setFixedSize(pixmap.width(), 40)
         header.addWidget(self.logo_label)
 
         titles = QVBoxLayout()
@@ -768,11 +768,16 @@ class MainWindow(QWidget):
                 chosen += source.suffix
             target = chosen
 
+        in_place = Path(target).resolve() == Path(self.media_path).resolve()
+        if in_place:
+            # Windows houdt een bestand vast zolang de speler het open heeft;
+            # ffmpeg kan het dan niet vervangen.
+            self.player.stop()
         self._set_busy(True)
         self.set_status("Metadata opslaan…")
         worker = Worker(core.write_tags, self.media_path, target, values)
         worker.progress.connect(self._on_progress)
-        worker.done.connect(lambda result: self._on_saved(result, values, target))
+        worker.done.connect(lambda result: self._on_saved(result, values, target, in_place))
         worker.failed.connect(self._on_save_failed)
         worker.finished.connect(lambda: self._set_busy(False))
         self._worker = worker
@@ -782,7 +787,8 @@ class MainWindow(QWidget):
         self.progress.show()
         self.progress.setValue(int(value * 1000))
 
-    def _on_saved(self, result: core.MediaInfo, values: dict, target: str) -> None:
+    def _on_saved(self, result: core.MediaInfo, values: dict, target: str,
+                  in_place: bool = False) -> None:
         self._worker = None
         self.progress.hide()
         self.progress.setValue(0)
@@ -808,7 +814,9 @@ class MainWindow(QWidget):
                 f"Opgeslagen{suffix} · {len(matches)} van {len(matches)} velden gecontroleerd "
                 f"in {Path(target).name}"
             )
-        self.player.setMedia(QMediaContent(QUrl.fromLocalFile(target)))
+        if not in_place:
+            # Alleen bij "opslaan als" hoeft de speler een ander bestand te laden.
+            self.player.setMedia(QMediaContent(QUrl.fromLocalFile(target)))
         self._sync_enabled()
 
     def _show_save_dialog(self, missing: list[str]) -> None:
