@@ -27,3 +27,5 @@ android/*.jks
 .jvm-libs/
 .signing/
 android/local.properties
+
+deliverables/

@@ -770,9 +770,11 @@ class MainWindow(QWidget):
 
         in_place = Path(target).resolve() == Path(self.media_path).resolve()
         if in_place:
-            # Windows houdt een bestand vast zolang de speler het open heeft;
-            # ffmpeg kan het dan niet vervangen.
+            # Windows houdt het bestand vast zolang de speler het als media heeft;
+            # zonder dit kan ffmpeg het bestand niet vervangen (en lijkt opslaan
+            # te slagen terwijl de tags niet aankomen).
             self.player.stop()
+            self.player.setMedia(QMediaContent())
         self._set_busy(True)
         self.set_status("Metadata opslaan…")
         worker = Worker(core.write_tags, self.media_path, target, values)
@@ -814,9 +816,9 @@ class MainWindow(QWidget):
                 f"Opgeslagen{suffix} · {len(matches)} van {len(matches)} velden gecontroleerd "
                 f"in {Path(target).name}"
             )
-        if not in_place:
-            # Alleen bij "opslaan als" hoeft de speler een ander bestand te laden.
-            self.player.setMedia(QMediaContent(QUrl.fromLocalFile(target)))
+        # Media (opnieuw) laden: bij "opslaan als" is het een ander bestand, bij
+        # een in-place opslag was de media losgelaten om te kunnen schrijven.
+        self.player.setMedia(QMediaContent(QUrl.fromLocalFile(target)))
         self._sync_enabled()
 
     def _show_save_dialog(self, missing: list[str]) -> None:

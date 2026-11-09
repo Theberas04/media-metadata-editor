@@ -144,9 +144,8 @@ def selftest() -> int:
         if info.tag("title") == "Zelftest na opslaan" and info.tag("album") == "Controle":
             log("selftest: opslaan via de UI gecontroleerd")
         else:
-            warnings.append(
-                f"opslaan via de UI gaf andere tags terug: {info.tag('title')!r}"
-            )
+            log(f"selftest: FOUT - opslaan via de UI gaf {info.tag('title')!r} terug")
+            return 1
     else:
         # De schrijfactie zelf is hierboven al bewezen; deze stap gaat over de
         # Qt-thread en de speler, en dat is op een runner zonder scherm niet

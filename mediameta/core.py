@@ -491,7 +491,7 @@ def _write_tags(
         tail = (stderr or "").strip().splitlines()[-6:]
         raise MediaError("ffmpeg kon het bestand niet wegschrijven:\n" + "\n".join(tail))
 
-    os.replace(tmp, target)
+    _replace_with_retry(tmp, target)
     if on_progress:
         on_progress(1.0)
     elapsed = time.time() - started
@@ -499,6 +499,27 @@ def _write_tags(
     result = probe(target)
     result.tags["_elapsed_s"] = f"{elapsed:.2f}"
     return result
+
+
+def _replace_with_retry(tmp: Path, target: Path, attempts: int = 6) -> None:
+    """Vervangt het doelbestand, met herhaalpogingen.
+
+    Windows staat het vervangen soms net niet toe omdat een ander programma
+    (of onze eigen speler) het bestand nog heel even open heeft. Een paar keer
+    opnieuw proberen is genoeg; blijft het misgaan, dan zeggen we het eerlijk.
+    """
+    for attempt in range(attempts):
+        try:
+            os.replace(tmp, target)
+            return
+        except PermissionError as exc:
+            if attempt == attempts - 1:
+                tmp.unlink(missing_ok=True)
+                raise MediaError(
+                    "Het bestand kon niet vervangen worden omdat het nog in gebruik is "
+                    f"({target.name}). Sluit het bestand in andere programma's en probeer opnieuw."
+                ) from exc
+            time.sleep(0.35)
 
 
 def _report_progress(
