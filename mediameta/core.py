@@ -75,6 +75,20 @@ WRITE_TIMEOUT_S = 3600
 _write_lock = threading.Lock()
 
 
+# Optionele tracer: de self-test hangt hier een logger aan, zodat in CI te zien
+# is bij welke aanroep een hang ontstaat. In normaal gebruik staat hij uit.
+TRACE: Optional[Callable[[str], None]] = None
+
+
+def _trace(message: str) -> None:
+    if TRACE is None:
+        return
+    try:
+        TRACE(f"core: {message}")
+    except Exception:  # noqa: BLE001 - traceren mag nooit storen
+        pass
+
+
 class FFmpegMissing(RuntimeError):
     """ffmpeg is niet gevonden; de app kan dan niets met metadata."""
 
@@ -302,6 +316,7 @@ def probe(path: str | os.PathLike) -> MediaInfo:
     info = MediaInfo(path=str(path), size_bytes=path.stat().st_size)
 
     ffprobe = find_ffprobe()
+    _trace(f"probe {path.name} via {'ffprobe' if ffprobe else 'ffmpeg-terugvalweg'}")
     if ffprobe:
         proc = _run([
             ffprobe, "-v", "quiet", "-print_format", "json",
@@ -319,6 +334,7 @@ def probe(path: str | os.PathLike) -> MediaInfo:
 
     _fill_from_ffmpeg(info, path)
     info.probe_source = "ffmpeg"
+    _trace(f"probe {path.name} klaar (ffmpeg-terugvalweg)")
     return info
 
 
@@ -360,12 +376,16 @@ def _fill_from_ffmpeg(info: MediaInfo, path: Path) -> None:
     """Terugvalpad zonder ffprobe: ffmpeg levert de tags en het info-blok."""
     ffmpeg = find_ffmpeg()
 
+    _trace("ffmpeg-tags lezen")
     tag_proc = _run([ffmpeg, "-hide_banner", "-nostdin", "-v", "quiet",
                      "-i", str(path), "-f", "ffmetadata", "-"])
+    _trace("ffmpeg-tags gelezen")
     if tag_proc.returncode == 0 and tag_proc.stdout:
         info.tags = parse_ffmetadata(tag_proc.stdout)
 
+    _trace("ffmpeg-info lezen")
     info_proc = _run([ffmpeg, "-hide_banner", "-nostdin", "-i", str(path)])
+    _trace("ffmpeg-info gelezen")
     stderr = info_proc.stderr or ""
 
     match = _DURATION_RE.search(stderr)
@@ -439,8 +459,10 @@ def _write_tags(
     on_progress: Optional[Callable[[float], None]],
 ) -> MediaInfo:
     ffmpeg = find_ffmpeg()
+    _trace(f"schrijven naar {target.name}: eerst lezen")
     info = probe(source)
     duration_ms = info.duration_ms or 0
+    _trace(f"schrijven naar {target.name}: ffmpeg starten")
 
     in_place = target.resolve() == source.resolve()
     suffix = target.suffix or source.suffix
@@ -471,6 +493,7 @@ def _write_tags(
         errors="replace",
         creationflags=_CREATE_NO_WINDOW,
     )
+    _trace(f"ffmpeg gestart (pid {proc.pid})")
     stderr_chunks: list[str] = []
 
     def drain_stderr() -> None:
@@ -499,6 +522,9 @@ def _write_tags(
                 )
             if on_progress and duration_ms:
                 _report_progress(progress_file, duration_ms, on_progress)
+            wacht = int(time.time() - started)
+            if wacht and wacht % 15 == 0:
+                _trace(f"ffmpeg draait al {wacht}s")
             time.sleep(0.1)
     except BaseException:
         tmp.unlink(missing_ok=True)
@@ -514,6 +540,7 @@ def _write_tags(
         tail = (stderr or "").strip().splitlines()[-6:]
         raise MediaError("ffmpeg kon het bestand niet wegschrijven:\n" + "\n".join(tail))
 
+    _trace("ffmpeg klaar, bestand vervangen")
     _replace_with_retry(tmp, target)
     if on_progress:
         on_progress(1.0)
@@ -521,6 +548,7 @@ def _write_tags(
 
     result = probe(target)
     result.tags["_elapsed_s"] = f"{elapsed:.2f}"
+    _trace(f"schrijven naar {target.name} klaar in {elapsed:.1f}s")
     return result
 
 

@@ -122,6 +122,7 @@ def selftest() -> int:
     from mediameta.ui import MainWindow
     from mediameta.version import VERSION
 
+    core.TRACE = log
     log("selftest: mediameta-modules geladen")
 
     log(f"selftest: versie {VERSION}")
