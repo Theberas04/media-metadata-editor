@@ -72,6 +72,11 @@ def selftest() -> int:
 
     threading.Thread(target=watchdog, daemon=True).start()
 
+    def mark(naam: str) -> None:
+        """Logt welke stap begint; de laatste regel is de plek van een crash."""
+        stap["nu"] = naam
+        log(f"selftest: stap - {naam}")
+
     log("selftest: start")
     log(f"selftest: python {sys.version.split()[0]}, frozen={bool(getattr(sys, 'frozen', False))}")
     log(f"selftest: QT_QPA_PLATFORM={os.environ.get('QT_QPA_PLATFORM', '(niet gezet)')}")
@@ -123,7 +128,7 @@ def selftest() -> int:
 
     # Eerst de kern: kan deze build metadata wegschrijven en teruglezen?
     probe_values = {"title": "Kerncontrole", "artist": "Hermes", "album": "Controle"}
-    stap["nu"] = "kern-schrijfactie"
+    mark("kern-schrijfactie")
     core.write_tags(sample, None, probe_values)
     core_info = core.probe(str(sample))
     missing = [k for k, v in probe_values.items() if core_info.tag(k) != v]
@@ -138,7 +143,7 @@ def selftest() -> int:
         "composer": "Hermes",
         "lyrics": "Eerste regel\nTweede regel",
     }
-    stap["nu"] = "nieuwe velden"
+    mark("nieuwe velden")
     extra_file = workdir / "selftest-extra.mp3"
     extra_file.write_bytes(sample.read_bytes())
     core.write_tags(extra_file, None, {**probe_values, **extra_values})
@@ -149,7 +154,7 @@ def selftest() -> int:
     log("selftest: nieuwe velden (albumartiest, track, componist, songtekst) ok")
 
     # Frameknipsel: uit een echt videobestand één frame naar PNG.
-    stap["nu"] = "frameknipsel"
+    mark("frameknipsel")
     video = workdir / "selftest.mp4"
     subprocess.run(
         [core.find_ffmpeg(), "-hide_banner", "-loglevel", "error", "-y",
@@ -168,17 +173,17 @@ def selftest() -> int:
     batch_b = workdir / "batch-b.mp3"
     for bestand in (batch_a, batch_b):
         bestand.write_bytes(sample.read_bytes())
-    stap["nu"] = "batchverwerking"
+    mark("batchverwerking")
     rapport = core.batch_write([batch_a, batch_b], {"genre": "Zelftest"})
     assert len(rapport) == 2 and all(r["ok"] for r in rapport), f"batch: {rapport}"
     log("selftest: batchverwerking ok (2 bestanden)")
 
     app = QApplication([])  # noqa: F841 - houdt de UI in leven
-    stap["nu"] = "venster bouwen"
+    mark("venster bouwen")
     window = MainWindow(autoupdate=False)
     window.resize(1000, 800)
     window.show()
-    stap["nu"] = "metadata lezen in de UI"
+    mark("metadata lezen in de UI")
     window.open_path(str(extra_file))
     app.processEvents()
 
@@ -195,7 +200,7 @@ def selftest() -> int:
     assert window.last_dir, "laatste map niet onthouden"
     log(f"selftest: afspeellijst {window.playlist.count()} bestanden, recent en laatste map ok")
 
-    stap["nu"] = "opslaan via de UI"
+    mark("opslaan via de UI")
     window.edits["title"].setText("Zelftest na opslaan")
     window.edits["lyrics"].setPlainText("regel een\nregel twee")
     window.edits["album"].setText("Controle")
