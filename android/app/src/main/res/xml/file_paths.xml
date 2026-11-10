@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Alleen de map met frames die de app zelf klaarzet voor delen. -->
+    <cache-path name="gedeeld" path="gedeeld/" />
+</paths>

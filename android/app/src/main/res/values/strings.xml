@@ -24,4 +24,19 @@
 
     <string name="hint_open">Open een video of audiobestand om te beginnen</string>
     <string name="status_ready">Nog geen bestand geopend.</string>
+    <string name="field_albumartist">Albumartiest</string>
+    <string name="hint_albumartist">Bijv. Werdens Media</string>
+    <string name="field_track">Tracknummer</string>
+    <string name="hint_track">Bijv. 3 of 3/12</string>
+    <string name="field_disc">Schijf</string>
+    <string name="hint_disc">Bijv. 1/2</string>
+    <string name="field_composer">Componist</string>
+    <string name="hint_composer">Bijv. componist of maker</string>
+    <string name="field_lyrics">Songtekst</string>
+    <string name="hint_lyrics">Songtekst of transcriptie</string>
+    <string name="save_frame">Frame opslaan</string>
+    <string name="share_frame">Delen</string>
+    <string name="frame_saved">Frame opgeslagen.</string>
+    <string name="frame_failed">Kon geen frame opslaan: dit bestand heeft geen beeld.</string>
+    <string name="update_available">Nieuwe versie %1$s beschikbaar — tik om te downloaden</string>
 </resources>

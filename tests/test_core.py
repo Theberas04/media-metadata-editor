@@ -68,7 +68,9 @@ class CoreTests(unittest.TestCase):
         }
         core.write_tags(target, None, values)
         info = core.probe(target)
-        self.assertEqual(core.tags_match(values, info), {k: True for k in core.FIELDS})
+        self.assertEqual(
+            core.tags_match(values, info), {k: True for k in values}
+        )
         self.assertEqual(info.tag("title"), "Nieuwe titel")
         self.assertEqual(info.tag("year"), "2026")
 
@@ -167,6 +169,78 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(info.tag("title"), "Oorspronkelijke titel")
         self.assertEqual((info.width, info.height), (320, 180))
         self.assertGreater(info.duration_ms, 2000)
+
+    def test_all_new_fields_land_in_mp3(self):
+        """Alle velden behalve de zes oude moeten ook echt in een MP3 belanden."""
+        werk = self.dir / "velden.mp3"
+        shutil.copy(self.mp3, werk)
+        waarden = {k: f"X{k}" for k in core.FIELDS}
+        core.write_tags(werk, None, waarden)
+        terug = core.probe(werk)
+        for key in core.FIELDS:
+            self.assertTrue(
+                core.tags_match({key: waarden[key]}, terug).get(key),
+                f"{key} niet teruggevonden in de MP3",
+            )
+
+    def test_mp4_takes_all_fields_with_numeric_track(self):
+        """MP4 neemt alle velden over, mits track/disc een getal zijn."""
+        werk = self.dir / "velden.mp4"
+        shutil.copy(self.mp4, werk)
+        waarden = {k: f"X{k}" for k in core.FIELDS}
+        waarden["track"] = "3/12"
+        waarden["disc"] = "1/2"
+        core.write_tags(werk, None, waarden)
+        terug = core.probe(werk)
+        for key in core.FIELDS:
+            self.assertTrue(
+                core.tags_match({key: waarden[key]}, terug).get(key),
+                f"{key} niet teruggevonden in de MP4",
+            )
+
+    def test_mp4_reports_a_track_that_is_not_a_number(self):
+        """Onzinnige track/disc mag de app niet stil laten passeren."""
+        werk = self.dir / "onzin.mp4"
+        shutil.copy(self.mp4, werk)
+        core.write_tags(werk, None, {"track": "kant A"})
+        terug = core.probe(werk)
+        self.assertFalse(core.tags_match({"track": "kant A"}, terug).get("track"))
+
+    def test_extract_frame_writes_an_image(self):
+        target = self.dir / "frame.png"
+        result = core.extract_frame(self.mp4, target, 1000)
+        self.assertTrue(Path(result).is_file())
+        self.assertGreater(Path(result).stat().st_size, 500)
+
+    def test_extract_frame_refuses_audio(self):
+        with self.assertRaises(core.MediaError):
+            core.extract_frame(self.mp3, self.dir / "geen.png", 0)
+
+    def test_batch_write_updates_every_file(self):
+        eerste = self.dir / "batch-1.mp3"
+        tweede = self.dir / "batch-2.mp3"
+        shutil.copy(self.mp3, eerste)
+        shutil.copy(self.mp3, tweede)
+        rapport = core.batch_write([eerste, tweede], {"artist": "Werdens Media", "genre": "Test"})
+        self.assertEqual(len(rapport), 2)
+        for regel in rapport:
+            self.assertTrue(regel["ok"], regel["message"])
+        for bestand in (eerste, tweede):
+            self.assertEqual(core.probe(bestand).tag("artist"), "Werdens Media")
+        # Een veld dat niet in de overrides staat blijft staan.
+        self.assertEqual(core.probe(eerste).tag("title"), "Oorspronkelijke titel")
+
+    def test_batch_write_reports_what_a_container_refuses(self):
+        werk = self.dir / "batch.mp4"
+        shutil.copy(self.mp4, werk)
+        rapport = core.batch_write([werk], {"track": "kant A"})
+        self.assertFalse(rapport[0]["ok"])
+        self.assertIn("niet overgenomen", rapport[0]["message"])
+
+    def test_batch_write_keeps_going_after_a_missing_file(self):
+        rapport = core.batch_write([self.dir / "bestaat-niet.mp3"], {"artist": "X"})
+        self.assertEqual(len(rapport), 1)
+        self.assertFalse(rapport[0]["ok"])
 
     def test_helpers(self):
         self.assertEqual(core.format_duration(0), "00:00")

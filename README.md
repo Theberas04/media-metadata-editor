@@ -3,9 +3,8 @@
 [![Windows build](https://github.com/Theberas04/media-metadata-editor/actions/workflows/windows-build.yml/badge.svg)](https://github.com/Theberas04/media-metadata-editor/actions/workflows/windows-build.yml)
 [![Android APK](https://github.com/Theberas04/media-metadata-editor/actions/workflows/android-apk.yml/badge.svg)](https://github.com/Theberas04/media-metadata-editor/actions/workflows/android-apk.yml)
 
-Bekijk en bewerk metadata (titel, artiest, album, genre, jaar, commentaar) van
-video- en audiobestanden, met een speler eromheen. Windows-versie, Android-app
-en de broncode staan in deze repository.
+Bekijk en bewerk metadata van video- en audiobestanden, met een speler
+eromheen. Windows-versie, Android-app en de broncode staan in deze repository.
 
 ![screenshot](docs/screenshots/02-video-geopend.png)
 
@@ -19,6 +18,24 @@ en de broncode staan in deze repository.
   (`-c copy`), dus beeld en geluid blijven bit-voor-bit gelijk.
 - **Controleren**: na het opslaan leest de app het bestand terug en zegt per
   veld of het er echt in staat.
+- **Elf velden**: titel, artiest, albumartiest, album, tracknummer, schijf,
+  genre, jaar, componist, commentaar en songtekst.
+- **Afspeellijst**: bestanden toevoegen (ook meerdere tegelijk), dubbelklikken om
+  te openen, volgende/vorige met N en P, automatisch verder aan het einde, en de
+  lijst blijft bewaard tussen sessies.
+- **Recent en laatste map**: de app opent waar je gebleven was, met een lijst
+  van onlangs geopende bestanden.
+- **Batchverwerking**: dezelfde velden op een hele reeks bestanden tegelijk,
+  met per bestand de uitslag.
+- **Frameknipsel**: het beeld dat je ziet opslaan als PNG of JPG (Ctrl+K).
+- **Openen met**: een bestand als argument meegeven (`Media Metadata Editor.exe
+  "D:\video.mp4"`) of er een snelkoppeling van maken.
+- **Sneltoetsen**: spatie (spelen/pauzeren), ← → (−5/+5 s), ↑ ↓ (volume), Home
+  en End, N/P (volgende/vorige), Ctrl+O (openen), Ctrl+Y (toevoegen), Ctrl+K
+  (frame), Ctrl+B (batch), Ctrl+S (opslaan), Ctrl+Shift+S (opslaan als), F11
+  (volledig scherm), Delete (uit de lijst).
+- **Bijwerken**: de app controleert zelf bij het starten of er een nieuwe versie
+  is en werkt bij met een sha256-controle vóór er iets vervangen wordt.
 
 ## Installeren
 
@@ -31,10 +48,15 @@ te worden.
 
 ### Android
 
-Download de `app-release.apk` uit de laatste release en open hem op de telefoon.
-De app vraagt geen opslagmachtigingen: je kiest zelf een bestand. Op Android
-kunnen de tags van MP3, MP4, M4A en MOV aangepast worden; andere formaten zijn
-af te spelen en te lezen. Zie [android/README.md](android/README.md).
+Download de APK uit de release met de naam `android-…` (de Android-build staat
+bewust als prerelease, zodat hij de updater-URL van de Windows-versie niet
+kaapt) en open hem op de telefoon. De app vraagt geen opslagmachtigingen: je
+kiest zelf een bestand. Op Android kunnen de tags van MP3, MP4, M4A en MOV
+aangepast worden — dezelfde elf velden als op Windows. Een frame opslaan of
+delen kan ook. Zie [android/README.md](android/README.md).
+
+De Android-app controleert bij het starten of er een nieuwere APK is en toont
+dan een balk bovenaan met de downloadlink; zelf installeren blijft één tik.
 
 ## Schermafbeeldingen
 

@@ -2,6 +2,7 @@ package nl.werdens.mediameta
 
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
@@ -11,6 +12,7 @@ import android.util.Log
 import android.view.View
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
+import androidx.core.content.FileProvider
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem
@@ -44,6 +46,9 @@ class MainActivity : AppCompatActivity() {
     private var canWrite = false
     private var pendingSaveValues: Map<String, String>? = null
     private var posterBitmap: Bitmap? = null
+    private var hasVideo = false
+    private var frameBitmap: Bitmap? = null
+    private var pendingShare = false
 
     private val openDocument =
         registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -60,6 +65,23 @@ class MainActivity : AppCompatActivity() {
                 if (values != null) {
                     exportTo(uri, values)
                 }
+            }
+        }
+
+    private val createFrame =
+        registerForActivityResult(ActivityResultContracts.CreateDocument("image/png")) { uri ->
+            val bitmap = frameBitmap
+            frameBitmap = null
+            if (uri == null || bitmap == null) return@registerForActivityResult
+            try {
+                contentResolver.openOutputStream(uri)?.use { output ->
+                    if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) {
+                        throw IOException("Kon de afbeelding niet schrijven.")
+                    }
+                } ?: throw IOException("Geen schrijftoegang tot het gekozen bestand.")
+                setStatus(getString(R.string.frame_saved))
+            } catch (e: Exception) {
+                setStatus("Frame opslaan mislukt: ${e.message}", error = true)
             }
         }
 
@@ -85,12 +107,15 @@ class MainActivity : AppCompatActivity() {
         })
 
         binding.openButton.setOnClickListener { openDocument.launch(arrayOf("video/*", "audio/*")) }
+        binding.frameButton.setOnClickListener { saveFrame() }
+        binding.shareButton.setOnClickListener { shareFrame() }
         binding.readButton.setOnClickListener { readAgain() }
         binding.saveButton.setOnClickListener { save() }
 
         setButtonsEnabled(hasFile = false, busy = false)
         handleIntent(intent)
         Log.i("MediaMeta", "MediaMetaReady version=" + packageManager.getPackageInfo(packageName, 0).versionName)
+        checkForUpdate()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -182,6 +207,7 @@ class MainActivity : AppCompatActivity() {
                 if (duration > 0) append("  ·  ${formatDuration(duration)}")
                 append("  ·  ${humanSize(file.length())}")
             }
+            hasVideo = width > 0
             poster = if (width > 0) {
                 retriever.getFrameAtTime(1_000_000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
             } else {
@@ -244,6 +270,14 @@ class MainActivity : AppCompatActivity() {
             result["album"] = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM) ?: ""
             result["genre"] = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE) ?: ""
             result["year"] = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_YEAR) ?: ""
+            result["albumartist"] =
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUMARTIST) ?: ""
+            result["composer"] =
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_COMPOSER) ?: ""
+            result["track"] =
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CD_TRACK_NUMBER) ?: ""
+            result["disc"] =
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DISC_NUMBER) ?: ""
         } catch (_: Exception) {
         } finally {
             try {
@@ -263,19 +297,29 @@ class MainActivity : AppCompatActivity() {
     private fun applyTags(values: Map<String, String>) {
         binding.titleEdit.setText(values["title"].orEmpty())
         binding.artistEdit.setText(values["artist"].orEmpty())
+        binding.albumartistEdit.setText(values["albumartist"].orEmpty())
         binding.albumEdit.setText(values["album"].orEmpty())
+        binding.trackEdit.setText(values["track"].orEmpty())
+        binding.discEdit.setText(values["disc"].orEmpty())
         binding.genreEdit.setText(values["genre"].orEmpty())
         binding.yearEdit.setText(values["year"].orEmpty())
+        binding.composerEdit.setText(values["composer"].orEmpty())
         binding.commentEdit.setText(values["comment"].orEmpty())
+        binding.lyricsEdit.setText(values["lyrics"].orEmpty())
     }
 
     private fun currentValues(): Map<String, String> = linkedMapOf(
         "title" to binding.titleEdit.text.toString().trim(),
         "artist" to binding.artistEdit.text.toString().trim(),
+        "albumartist" to binding.albumartistEdit.text.toString().trim(),
         "album" to binding.albumEdit.text.toString().trim(),
+        "track" to binding.trackEdit.text.toString().trim(),
+        "disc" to binding.discEdit.text.toString().trim(),
         "genre" to binding.genreEdit.text.toString().trim(),
         "year" to binding.yearEdit.text.toString().trim(),
-        "comment" to binding.commentEdit.text.toString().trim()
+        "composer" to binding.composerEdit.text.toString().trim(),
+        "comment" to binding.commentEdit.text.toString().trim(),
+        "lyrics" to binding.lyricsEdit.text.toString().trim()
     )
 
     private fun readAgain() {
@@ -386,6 +430,133 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // ------------------------------------------------------- frame & delen
+
+    /** Pakt het huidige beeld uit het bestand als bitmap (of null). */
+    private fun grabFrame(): Bitmap? {
+        val file = workFile ?: return null
+        if (!hasVideo) return null
+        val positie = (player?.currentPosition ?: 0L) * 1000
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(file.absolutePath)
+            retriever.getFrameAtTime(positie, MediaMetadataRetriever.OPTION_CLOSEST)
+                ?: retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+        } catch (e: Exception) {
+            setStatus("Kon het beeld niet pakken: ${e.message}", error = true)
+            null
+        } finally {
+            try {
+                retriever.release()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun saveFrame() {
+        val bitmap = grabFrame()
+        if (bitmap == null) {
+            setStatus(getString(R.string.frame_failed), error = true)
+            return
+        }
+        frameBitmap = bitmap
+        val naam = displayName.substringBeforeLast('.', "frame") + "-frame.png"
+        createFrame.launch(naam)
+    }
+
+    private fun shareFrame() {
+        val bitmap = grabFrame()
+        if (bitmap == null) {
+            setStatus(getString(R.string.frame_failed), error = true)
+            return
+        }
+        try {
+            val map = File(cacheDir, "gedeeld")
+            map.mkdirs()
+            val bestand = File(map, displayName.substringBeforeLast('.', "frame") + "-frame.png")
+            bestand.outputStream().use { uit ->
+                if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, uit)) {
+                    throw IOException("Kon de afbeelding niet klaarzetten.")
+                }
+            }
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", bestand)
+            val deel = Intent(Intent.ACTION_SEND).apply {
+                type = "image/png"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(deel, getString(R.string.share_frame)))
+            pendingShare = false
+        } catch (e: Exception) {
+            setStatus("Delen mislukt: ${e.message}", error = true)
+        }
+    }
+
+    // ---------------------------------------------------------- updatecheck
+
+    /** Kijkt op GitHub of er een nieuwere APK is; stil als het niet lukt. */
+    private fun checkForUpdate() {
+        lifecycleScope.launch {
+            val gevonden = withContext(Dispatchers.IO) { nieuwsteApk() } ?: return@launch
+            val (versie, url) = gevonden
+            if (vergelijkVersie(versie, huidigeVersie()) <= 0) return@launch
+            binding.updateBanner.text = getString(R.string.update_available, versie)
+            binding.updateBanner.visibility = View.VISIBLE
+            binding.updateBanner.setOnClickListener {
+                startActivity(
+                    Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                )
+            }
+        }
+    }
+
+    private fun huidigeVersie(): String = try {
+        packageManager.getPackageInfo(packageName, 0).versionName ?: "0"
+    } catch (e: Exception) {
+        "0"
+    }
+
+    /** Nieuwste android-prerelease met een APK-asset: (versie, download-url). */
+    private fun nieuwsteApk(): Pair<String, String>? {
+        return try {
+            val verbinding = java.net.URL(
+                "https://api.github.com/repos/Theberas04/media-metadata-editor/releases"
+            ).openConnection() as java.net.HttpURLConnection
+            verbinding.setRequestProperty("User-Agent", "MediaMetadataEditor-android")
+            verbinding.connectTimeout = 12000
+            verbinding.readTimeout = 12000
+            val body = verbinding.inputStream.bufferedReader().use { it.readText() }
+            val releases = org.json.JSONArray(body)
+            for (i in 0 until releases.length()) {
+                val release = releases.getJSONObject(i)
+                if (!release.optBoolean("prerelease")) continue
+                if (!release.optString("tag_name").startsWith("android-")) continue
+                val assets = release.optJSONArray("assets") ?: continue
+                for (j in 0 until assets.length()) {
+                    val asset = assets.getJSONObject(j)
+                    val naam = asset.optString("name")
+                    val match = Regex("(\\d+(?:\\.\\d+)+)\\.apk$").find(naam) ?: continue
+                    return match.groupValues[1] to asset.optString("browser_download_url")
+                }
+            }
+            null
+        } catch (e: Exception) {
+            Log.i("MediaMeta", "Updatecontrole overgeslagen: ${e.message}")
+            null
+        }
+    }
+
+    private fun vergelijkVersie(a: String, b: String): Int {
+        val links = a.split(".").map { it.toIntOrNull() ?: 0 }
+        val rechts = b.split(".").map { it.toIntOrNull() ?: 0 }
+        for (i in 0 until maxOf(links.size, rechts.size)) {
+            val x = links.getOrElse(i) { 0 }
+            val y = rechts.getOrElse(i) { 0 }
+            if (x != y) return x - y
+        }
+        return 0
+    }
+
     // ------------------------------------------------------------- weergave
 
     private fun setPoster(poster: Bitmap?) {
@@ -422,6 +593,11 @@ class MainActivity : AppCompatActivity() {
         binding.saveButton.isEnabled = hasFile && canWrite && !busy
         binding.readButton.alpha = if (binding.readButton.isEnabled) 1f else 0.5f
         binding.saveButton.alpha = if (binding.saveButton.isEnabled) 1f else 0.5f
+        val frameKlaar = hasFile && hasVideo && !busy
+        binding.frameButton.isEnabled = frameKlaar
+        binding.shareButton.isEnabled = frameKlaar
+        binding.frameButton.alpha = if (frameKlaar) 1f else 0.5f
+        binding.shareButton.alpha = if (frameKlaar) 1f else 0.5f
     }
 
     // -------------------------------------------------------------- hulpjes

@@ -29,14 +29,37 @@ SUPPORTED_EXTS = tuple(sorted(set(AUDIO_EXTS) | set(VIDEO_EXTS)))
 
 # UI-veld -> ffmpeg-tagnaam.  'jaar' gaat naar 'date', dat is de tag die
 # MP4/MKV/MP3 (TDRC) allemaal begrijpen; ffmpeg leest hem ook weer als jaar.
-FIELDS = ("title", "artist", "album", "genre", "year", "comment")
+FIELDS = (
+    "title", "artist", "albumartist", "album", "track", "disc",
+    "genre", "year", "composer", "comment", "lyrics",
+)
 FIELD_TAGS = {
     "title": "title",
     "artist": "artist",
+    "albumartist": "album_artist",
     "album": "album",
+    "track": "track",
+    "disc": "disc",
     "genre": "genre",
     "year": "date",
+    "composer": "composer",
     "comment": "comment",
+    "lyrics": "lyrics",
+}
+
+# Nederlandse labels voor meldingen en de batchrapportage.
+FIELD_LABELS = {
+    "title": "Titel",
+    "artist": "Artiest",
+    "albumartist": "Albumartiest",
+    "album": "Album",
+    "track": "Tracknummer",
+    "disc": "Schijf",
+    "genre": "Genre",
+    "year": "Jaar",
+    "composer": "Componist",
+    "comment": "Commentaar",
+    "lyrics": "Songtekst",
 }
 
 # Containers waar +faststart zin heeft (moov vooraan, sneller starten).
@@ -97,7 +120,7 @@ class MediaInfo:
         return ""
 
     def fields(self) -> dict:
-        """De zes UI-velden als platte dict."""
+        """Alle UI-velden als platte dict."""
         return {name: self.tag(name) for name in FIELDS}
 
     def summary(self) -> str:
@@ -603,3 +626,80 @@ def poster_image(
         if proc.returncode == 0 and target.exists() and target.stat().st_size > 0:
             return str(target)
     return None
+
+def extract_frame(
+    source: str | os.PathLike,
+    target: str | os.PathLike,
+    position_ms: int = 0,
+) -> str:
+    """Pakt precies één frame op het opgegeven tijdstip als afbeelding.
+
+    Werkt voor PNG en JPG; bij audio zonder videospoor is er niets te pakken
+    en zeggen we dat eerlijk.
+    """
+    source, target = Path(source), Path(target)
+    if not source.is_file():
+        raise MediaError(f"Bestand niet gevonden: {source}")
+    info = probe(source)
+    if not info.is_video:
+        raise MediaError(
+            "Dit bestand heeft geen videospoor, dus er is geen frame om op te slaan."
+        )
+    ffmpeg = find_ffmpeg()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    limit = max(0, (info.duration_ms or 0) - 1)
+    seconds = max(0.0, min(float(position_ms), float(limit)) / 1000.0)
+    args = [
+        ffmpeg, "-hide_banner", "-nostdin", "-y", "-loglevel", "error",
+        "-ss", f"{seconds:.3f}", "-i", str(source),
+        "-frames:v", "1", "-an",
+    ]
+    if target.suffix.lower() in (".jpg", ".jpeg"):
+        args += ["-q:v", "2"]
+    args.append(str(target))
+    proc = _run(args, timeout=180)
+    if proc.returncode != 0 or not target.exists() or target.stat().st_size == 0:
+        target.unlink(missing_ok=True)
+        tail = (proc.stderr or "").strip().splitlines()[-4:]
+        raise MediaError("Kon geen frame opslaan:\n" + "\n".join(tail))
+    return str(target)
+
+
+def batch_write(
+    files: list[str | os.PathLike],
+    overrides: dict,
+    on_progress: Optional[Callable[[float], None]] = None,
+) -> list[dict]:
+    """Zet dezelfde wijzigingen op een reeks bestanden.
+
+    `overrides` bevat alleen de velden die aangepast moeten worden; velden die
+    er niet in staan blijven zoals ze zijn. Een lege waarde wist het veld.
+    Elk bestand wordt na het schrijven teruggelezen en gecontroleerd, en het
+    resultaat per bestand komt terug in de lijst.
+    """
+    results: list[dict] = []
+    total = len(files) or 1
+    for index, item in enumerate(files):
+        path = Path(item)
+        entry = {"path": str(path), "name": path.name, "ok": False, "message": ""}
+        try:
+            info = probe(path)
+            values = info.fields()
+            values.update({k: v for k, v in overrides.items() if k in FIELDS})
+            written = write_tags(path, None, values)
+            matches = tags_match({k: values[k] for k in overrides}, written)
+            missing = [FIELD_LABELS.get(k, k) for k, ok in matches.items() if not ok]
+            if missing:
+                entry["ok"] = False
+                entry["message"] = (
+                    "niet overgenomen door het bestandsformaat: " + ", ".join(missing)
+                )
+            else:
+                entry["ok"] = True
+                entry["message"] = "bijgewerkt"
+        except (MediaError, FFmpegMissing) as exc:
+            entry["message"] = str(exc).splitlines()[0]
+        results.append(entry)
+        if on_progress:
+            on_progress((index + 1) / total)
+    return results

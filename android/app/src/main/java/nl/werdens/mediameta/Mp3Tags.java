@@ -39,6 +39,11 @@ public final class Mp3Tags {
         tag.setAlbum(nullToEmpty(values.get("album")));
         tag.setYear(nullToEmpty(values.get("year")));
         tag.setComment(nullToEmpty(values.get("comment")));
+        tag.setAlbumArtist(nullToEmpty(values.get("albumartist")));
+        tag.setComposer(nullToEmpty(values.get("composer")));
+        tag.setTrack(nullToEmpty(values.get("track")).trim());
+        tag.setPartOfSet(nullToEmpty(values.get("disc")).trim());
+        tag.setLyrics(nullToEmpty(values.get("lyrics")));
         String genre = nullToEmpty(values.get("genre")).trim();
         if (!genre.isEmpty()) {
             try {
@@ -141,6 +146,17 @@ public final class Mp3Tags {
                 | ((data[offset + 1] & 0xFF) << 16)
                 | ((data[offset + 2] & 0xFF) << 8)
                 | (data[offset + 3] & 0xFF);
+    }
+
+    /** ID3v2 kent meer velden dan ID3v1; die vullen we hier bij. */
+    private static Map<String, String> fill(ID3v2 tag) {
+        Map<String, String> tags = fill((ID3v1) tag);
+        tags.put("albumartist", nullToEmpty(tag.getAlbumArtist()));
+        tags.put("composer", nullToEmpty(tag.getComposer()));
+        tags.put("track", nullToEmpty(tag.getTrack()));
+        tags.put("disc", nullToEmpty(tag.getPartOfSet()));
+        tags.put("lyrics", nullToEmpty(tag.getLyrics()));
+        return tags;
     }
 
     private static Map<String, String> fill(ID3v1 tag) {

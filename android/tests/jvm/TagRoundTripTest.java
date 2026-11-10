@@ -96,6 +96,11 @@ public final class TagRoundTripTest {
         values.put("genre", name.endsWith(".mp3") ? "Ambient" : "Documentaire");
         values.put("year", "2026");
         values.put("comment", "definitief; klant, 4K");
+        values.put("albumartist", "Werdens Media");
+        values.put("composer", "Tom Werdens");
+        values.put("track", "3/12");
+        values.put("disc", "1/2");
+        values.put("lyrics", "Eerste regel\nTweede regel");
         return values;
     }
 }

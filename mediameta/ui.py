@@ -9,16 +9,21 @@ import webbrowser
 from pathlib import Path
 from typing import Optional
 
-from PyQt5.QtCore import QPointF, QRectF, QSize, Qt, QThread, QTimer, QUrl, pyqtSignal
+from PyQt5.QtCore import (
+    QPointF, QRectF, QSettings, QSize, QStandardPaths, Qt, QThread, QTimer,
+    QUrl, pyqtSignal,
+)
 from PyQt5.QtGui import (
     QColor, QFont, QIcon, QKeySequence, QPainter, QPen, QPixmap, QPolygonF,
 )
 from PyQt5.QtMultimedia import QMediaContent, QMediaPlayer
 from PyQt5.QtMultimediaWidgets import QVideoWidget
 from PyQt5.QtWidgets import (
-    QApplication, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
-    QLineEdit, QMessageBox, QProgressBar, QPushButton, QSizePolicy, QSlider,
-    QStackedLayout, QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QCheckBox, QDialog, QDialogButtonBox,
+    QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+    QListWidget, QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit,
+    QProgressBar, QPushButton, QSizePolicy, QSlider, QStackedLayout,
+    QVBoxLayout, QWidget,
 )
 
 from . import core, updater
@@ -118,6 +123,21 @@ QProgressBar {{
     max-height: 6px; min-height: 6px; color: transparent;
 }}
 QProgressBar::chunk {{ background: {ACCENT}; border-radius: 3px; }}
+QListWidget#Playlist {{
+    background: #ffffff; border: 1px solid {LINE}; border-radius: 8px; padding: 3px;
+}}
+QListWidget#Playlist::item {{ padding: 5px 6px; border-radius: 5px; }}
+QListWidget#Playlist::item:selected {{ background: #eff6ff; color: {ACCENT}; }}
+QListWidget#Playlist::item:hover {{ background: #f8fafc; }}
+QPlainTextEdit {{
+    background: #ffffff; border: 1px solid {LINE}; border-radius: 6px;
+    padding: 5px 8px; color: {INK};
+}}
+QPlainTextEdit:focus {{ border: 1px solid {ACCENT}; }}
+QListWidget#BatchList {{
+    background: #ffffff; border: 1px solid {LINE}; border-radius: 8px; padding: 3px;
+}}
+QPlainTextEdit#BatchLog {{ background: #f8fafc; border: 1px solid #eef2f7; }}
 """
 
 
@@ -275,13 +295,217 @@ class VideoSurface(QVideoWidget):
 # Hoofdvenster
 # --------------------------------------------------------------------------- #
 
+class BatchDialog(QDialog):
+    """Zet dezelfde velden op een reeks bestanden in één keer.
+
+    Alleen aangevinkte velden worden aangepast; de rest blijft staan. Elk
+    bestand wordt na het schrijven teruggelezen en het resultaat per bestand
+    verschijnt in het log.
+    """
+
+    def __init__(self, files: list[str], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Batch — dezelfde velden op meerdere bestanden")
+        self.setMinimumSize(720, 780)
+        self.setStyleSheet(parent.styleSheet() if parent else "")
+        self._worker = None
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(18, 16, 18, 16)
+        outer.setSpacing(10)
+
+        kop = QLabel(
+            "Vink aan welke velden je wilt zetten en vul de waarde in. "
+            "Velden die je niet aanvinkt blijven ongewijzigd."
+        )
+        kop.setWordWrap(True)
+        outer.addWidget(kop)
+
+        self.file_list = QListWidget()
+        self.file_list.setObjectName("BatchList")
+        self.file_list.setSelectionMode(QAbstractItemView.NoSelection)
+        outer.addWidget(self.file_list, 2)
+        self._set_files(files)
+
+        knoppenrij = QHBoxLayout()
+        self.add_btn = QPushButton("Bestanden toevoegen…")
+        self.add_btn.clicked.connect(self._add_files)
+        self.remove_btn = QPushButton("Selectie weghalen")
+        self.remove_btn.clicked.connect(self._remove_checked)
+        knoppenrij.addWidget(self.add_btn)
+        knoppenrij.addWidget(self.remove_btn)
+        knoppenrij.addStretch(1)
+        outer.addLayout(knoppenrij)
+
+        self.field_boxes: dict[str, tuple[QCheckBox, QWidget]] = {}
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(6)
+        labels = core.FIELD_LABELS
+        volgorde = [f for f in core.FIELDS if f != "lyrics"]
+        for index, key in enumerate(volgorde):
+            box = QCheckBox(labels.get(key, key))
+            box.setObjectName("BatchField")
+            if key == "lyrics":
+                edit = QPlainTextEdit()
+                edit.setFixedHeight(58)
+            else:
+                edit = QLineEdit()
+                edit.setPlaceholderText("Nieuwe waarde")
+                edit.setMinimumHeight(30)
+            edit.setEnabled(False)
+            box.toggled.connect(edit.setEnabled)
+            self.field_boxes[key] = (box, edit)
+            rij, kolom = divmod(index, 2)
+            houder = QVBoxLayout()
+            houder.setSpacing(2)
+            houder.addWidget(box)
+            houder.addWidget(edit)
+            grid.addLayout(houder, rij, kolom)
+        for kolom in range(2):
+            grid.setColumnStretch(kolom, 1)
+
+        lyrics_box = QCheckBox(labels["lyrics"])
+        lyrics_box.setObjectName("BatchField")
+        lyrics = QPlainTextEdit()
+        lyrics.setFixedHeight(60)
+        lyrics.setEnabled(False)
+        lyrics_box.toggled.connect(lyrics.setEnabled)
+        self.field_boxes["lyrics"] = (lyrics_box, lyrics)
+        grid.addWidget(lyrics_box, 6, 0)
+        grid.addWidget(lyrics, 7, 0, 1, 2)
+        outer.addLayout(grid)
+
+        self.log = QPlainTextEdit()
+        self.log.setObjectName("BatchLog")
+        self.log.setReadOnly(True)
+        self.log.setFixedHeight(96)
+        self.log.setMaximumHeight(120)
+        outer.addWidget(self.log)
+
+        self.progress = QProgressBar()
+        self.progress.setTextVisible(False)
+        self.progress.setRange(0, 1000)
+        self.progress.setValue(0)
+        outer.addWidget(self.progress)
+
+        self.buttons = QDialogButtonBox()
+        self.apply_btn = self.buttons.addButton("Toepassen", QDialogButtonBox.AcceptRole)
+        self.close_btn = self.buttons.addButton("Sluiten", QDialogButtonBox.RejectRole)
+        self.apply_btn.setObjectName("Primary")
+        self.apply_btn.clicked.connect(self._apply)
+        self.close_btn.clicked.connect(self.reject)
+        outer.addWidget(self.buttons)
+
+    # ------------------------------------------------------------------ --
+
+    def _set_files(self, files: list[str]) -> None:
+        self.file_list.clear()
+        for pad in files:
+            item = QListWidgetItem(Path(pad).name)
+            item.setData(Qt.UserRole, str(Path(pad).resolve()))
+            item.setToolTip(str(pad))
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked)
+            self.file_list.addItem(item)
+
+    def _add_files(self) -> None:
+        patterns = " ".join(f"*{ext}" for ext in core.SUPPORTED_EXTS)
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Bestanden toevoegen", "",
+            f"Media-bestanden ({patterns});;Alle bestanden (*)",
+        )
+        bestaand = {
+            str(item.data(Qt.UserRole)) for item in
+            (self.file_list.item(i) for i in range(self.file_list.count()))
+        }
+        for pad in paths:
+            if str(Path(pad).resolve()) not in bestaand and core.is_supported(pad):
+                item = QListWidgetItem(Path(pad).name)
+                item.setData(Qt.UserRole, str(Path(pad).resolve()))
+                item.setToolTip(str(pad))
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Checked)
+                self.file_list.addItem(item)
+
+    def _remove_checked(self) -> None:
+        for rij in range(self.file_list.count() - 1, -1, -1):
+            if self.file_list.item(rij).checkState() == Qt.Checked:
+                self.file_list.takeItem(rij)
+
+    def _selected_files(self) -> list[str]:
+        return [
+            str(self.file_list.item(i).data(Qt.UserRole))
+            for i in range(self.file_list.count())
+            if self.file_list.item(i).checkState() == Qt.Checked
+        ]
+
+    def _overrides(self) -> dict:
+        waarden = {}
+        for key, (box, edit) in self.field_boxes.items():
+            if not box.isChecked():
+                continue
+            if isinstance(edit, QPlainTextEdit):
+                waarden[key] = edit.toPlainText().strip()
+            else:
+                waarden[key] = edit.text().strip()
+        return waarden
+
+    def _apply(self) -> None:
+        if self._worker is not None:
+            return
+        bestanden = self._selected_files()
+        overrides = self._overrides()
+        if not bestanden:
+            self.log.appendPlainText("Geen bestanden aangevinkt.")
+            return
+        if not overrides:
+            self.log.appendPlainText("Geen velden aangevinkt — er valt niets te wijzigen.")
+            return
+        self.log.appendPlainText(
+            f"{len(bestanden)} bestand(en), {len(overrides)} veld(en): "
+            + ", ".join(core.FIELD_LABELS.get(k, k) for k in overrides)
+        )
+        self.apply_btn.setEnabled(False)
+        self.progress.setValue(0)
+        worker = Worker(core.batch_write, bestanden, overrides)
+        worker.progress.connect(self._on_progress)
+        worker.done.connect(self._on_done)
+        worker.failed.connect(self._on_failed)
+        worker.finished.connect(lambda: self.apply_btn.setEnabled(True))
+        self._worker = worker
+        worker.start()
+
+    def _on_progress(self, value: float) -> None:
+        self.progress.setValue(int(value * 1000))
+
+    def _on_done(self, results: list) -> None:
+        self._worker = None
+        self.progress.setValue(1000)
+        gelukt = sum(1 for r in results if r.get("ok"))
+        for r in results:
+            teken = "OK" if r.get("ok") else "LET OP"
+            self.log.appendPlainText(f"[{teken}] {r.get('name')} — {r.get('message')}")
+        self.log.appendPlainText(f"Klaar: {gelukt} van {len(results)} volledig bijgewerkt.")
+
+    def _on_failed(self, message: str) -> None:
+        self._worker = None
+        self.log.appendPlainText(f"Batch mislukt: {message}")
+
+    def closeEvent(self, event):
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.cancel()
+            self._worker.wait(2000)
+        super().closeEvent(event)
+
+
 class MainWindow(QWidget):
     def __init__(self, autoupdate: bool = True):
         super().__init__()
         self.setObjectName("Root")
         self.setWindowTitle(APP_NAME)
         self.resize(1120, 840)
-        self.setMinimumSize(880, 660)
+        self.setMinimumSize(960, 700)
         self.setStyleSheet(STYLESHEET)
         self.setAcceptDrops(True)
 
@@ -297,8 +521,17 @@ class MainWindow(QWidget):
         self._tempdir = tempfile.mkdtemp(prefix="mediameta-")
         self._unverified_style = "border: 1px solid #fca5a5; background: #fef2f2;"
 
+        # Onthouden tussen sessies: recente bestanden, laatste map, volume,
+        # vensterpositie.
+        self.settings = QSettings("Werdens Media", "Media Metadata Editor")
+        self.recent: list[str] = [
+            str(item) for item in (self.settings.value("bestanden/recent", []) or [])
+        ]
+        self.last_dir: str = str(self.settings.value("bestanden/laatste_map", "") or "")
+
         self._build_ui()
         self._wire_player()
+        self._restore_settings()
 
         logo_path = _asset("branding", "logo.png")
         if logo_path:
@@ -316,10 +549,18 @@ class MainWindow(QWidget):
         root.setSpacing(12)
 
         root.addLayout(self._build_header())
-        root.addWidget(self._build_player(), 1)
-        root.addLayout(self._build_timeline())
-        root.addLayout(self._build_transport())
-        root.addWidget(self._build_metadata_card())
+
+        body = QHBoxLayout()
+        body.setSpacing(14)
+        left = QVBoxLayout()
+        left.setSpacing(12)
+        left.addWidget(self._build_player(), 1)
+        left.addLayout(self._build_timeline())
+        left.addLayout(self._build_transport())
+        left.addWidget(self._build_metadata_card())
+        body.addLayout(left, 1)
+        body.addWidget(self._build_playlist())
+        root.addLayout(body, 1)
         root.addLayout(self._build_footer())
 
         self.status_label = QLabel("Klaar om een mediabestand te openen.")
@@ -358,7 +599,7 @@ class MainWindow(QWidget):
         titles.setSpacing(1)
         name = QLabel("Media Metadata Editor")
         name.setObjectName("AppName")
-        subtitle = QLabel("Bekijk en bewerk titel, artiest, album, genre en jaar")
+        subtitle = QLabel("Bekijk en bewerk titel, artiest, album, genre, jaar, hoes en meer")
         subtitle.setObjectName("AppSub")
         titles.addWidget(name)
         titles.addWidget(subtitle)
@@ -412,6 +653,48 @@ class MainWindow(QWidget):
         layout.setCurrentWidget(self.hint_box)
         self.player_layout = layout
         return frame
+
+    def _build_playlist(self) -> QWidget:
+        card = QFrame()
+        card.setObjectName("Card")
+        card.setFixedWidth(272)
+        outer = QVBoxLayout(card)
+        outer.setContentsMargins(12, 12, 12, 12)
+        outer.setSpacing(8)
+
+        title = QLabel("AFSPEELLIJST")
+        title.setObjectName("SectionTitle")
+        outer.addWidget(title)
+
+        self.playlist = QListWidget()
+        self.playlist.setObjectName("Playlist")
+        self.playlist.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.playlist.setAcceptDrops(True)
+        self.playlist.itemDoubleClicked.connect(self._on_playlist_activated)
+        outer.addWidget(self.playlist, 1)
+
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        self.queue_add_btn = QPushButton("Toevoegen")
+        self.queue_add_btn.setCursor(Qt.PointingHandCursor)
+        self.queue_add_btn.clicked.connect(self.add_files_dialog)
+        self.queue_remove_btn = QPushButton("Weg")
+        self.queue_remove_btn.setCursor(Qt.PointingHandCursor)
+        self.queue_remove_btn.setToolTip("Geselecteerde bestanden uit de lijst halen (Delete)")
+        self.queue_remove_btn.clicked.connect(self.playlist_remove_selected)
+        self.queue_clear_btn = QPushButton("Legen")
+        self.queue_clear_btn.setCursor(Qt.PointingHandCursor)
+        self.queue_clear_btn.clicked.connect(self.playlist_clear)
+        for widget in (self.queue_add_btn, self.queue_remove_btn, self.queue_clear_btn):
+            widget.setFocusPolicy(Qt.NoFocus)
+            row.addWidget(widget)
+        outer.addLayout(row)
+
+        self.queue_hint = QLabel("Dubbelklik om te openen · N/P = volgende/vorige")
+        self.queue_hint.setObjectName("FieldLabel")
+        self.queue_hint.setWordWrap(True)
+        outer.addWidget(self.queue_hint)
+        return card
 
     def _build_timeline(self) -> QHBoxLayout:
         row = QHBoxLayout()
@@ -484,6 +767,16 @@ class MainWindow(QWidget):
         self.fullscreen_btn.setToolTip("Volledig scherm (F11)")
         self.fullscreen_btn.clicked.connect(self.toggle_fullscreen)
 
+        self.recent_btn = QPushButton("Recent ▾")
+        self.recent_btn.setCursor(Qt.PointingHandCursor)
+        self.recent_btn.setToolTip("Onlangs geopende bestanden")
+        self.recent_btn.clicked.connect(self._show_recent_menu)
+
+        self.frame_btn = QPushButton("Frame opslaan")
+        self.frame_btn.setCursor(Qt.PointingHandCursor)
+        self.frame_btn.setToolTip("Het huidige beeld opslaan als PNG of JPG (Ctrl+K)")
+        self.frame_btn.clicked.connect(self.save_frame)
+
         self.read_btn = QPushButton("Lees metadata")
         self.read_btn.setCursor(Qt.PointingHandCursor)
         self.read_btn.clicked.connect(self.read_metadata)
@@ -498,12 +791,13 @@ class MainWindow(QWidget):
         self.save_btn.setToolTip("Metadata in dit bestand opslaan (Ctrl+S)")
         self.save_btn.clicked.connect(lambda: self.save_metadata(save_as=False))
 
-        for widget in (self.open_btn, self.back_btn, self.play_btn, self.forward_btn,
-                       self.mute_btn, self.fullscreen_btn, self.read_btn,
-                       self.save_as_btn, self.save_btn):
+        for widget in (self.open_btn, self.recent_btn, self.back_btn, self.play_btn,
+                       self.forward_btn, self.mute_btn, self.fullscreen_btn,
+                       self.frame_btn, self.read_btn, self.save_as_btn, self.save_btn):
             widget.setFocusPolicy(Qt.NoFocus)
 
         row.addWidget(self.open_btn)
+        row.addWidget(self.recent_btn)
         row.addSpacing(6)
         row.addWidget(self.back_btn)
         row.addWidget(self.play_btn)
@@ -512,6 +806,7 @@ class MainWindow(QWidget):
         row.addWidget(self.mute_btn)
         row.addWidget(self.volume)
         row.addWidget(self.fullscreen_btn)
+        row.addWidget(self.frame_btn)
         row.addStretch(1)
         row.addWidget(self.read_btn)
         row.addWidget(self.save_as_btn)
@@ -525,33 +820,55 @@ class MainWindow(QWidget):
         outer.setContentsMargins(16, 12, 16, 14)
         outer.setSpacing(8)
 
+        kop = QHBoxLayout()
         title = QLabel("METADATA")
         title.setObjectName("SectionTitle")
-        outer.addWidget(title)
+        kop.addWidget(title)
+        kop.addStretch(1)
+        self.batch_btn = QPushButton("Batch…")
+        self.batch_btn.setCursor(Qt.PointingHandCursor)
+        self.batch_btn.setToolTip("Dezelfde velden op meerdere bestanden tegelijk zetten")
+        self.batch_btn.clicked.connect(self.open_batch_dialog)
+        kop.addWidget(self.batch_btn)
+        outer.addLayout(kop)
 
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(14)
-        grid.setVerticalSpacing(4)
-        self.edits: dict[str, QLineEdit] = {}
         labels = {
             "title": "Titel",
             "artist": "Artiest",
+            "albumartist": "Albumartiest",
             "album": "Album",
+            "track": "Tracknummer",
+            "disc": "Schijf",
             "genre": "Genre",
             "year": "Jaar",
+            "composer": "Componist",
             "comment": "Commentaar / labels (komma-gescheiden)",
+            "lyrics": "Songtekst",
         }
         placeholders = {
             "title": "Naam van het fragment",
             "artist": "Maker of artiest",
+            "albumartist": "Bijv. Werdens Media",
             "album": "Album of serie",
+            "track": "Bijv. 3 of 3/12",
+            "disc": "Bijv. 1/2",
             "genre": "Bijv. Documentaire",
             "year": "Bijv. 2026",
+            "composer": "Bijv. componist of maker",
             "comment": "Bijv. klant, locatie, versie",
+            "lyrics": "Songtekst of transcriptie",
         }
-        positions = {"title": (0, 0), "artist": (0, 1), "album": (0, 2),
-                     "genre": (1, 0), "year": (1, 1), "comment": (2, 0)}
-        for key, (row, col) in positions.items():
+        posities = {
+            "title": (0, 0), "artist": (0, 1), "albumartist": (0, 2),
+            "album": (1, 0), "track": (1, 1), "disc": (1, 2),
+            "genre": (2, 0), "year": (2, 1), "composer": (2, 2),
+        }
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(4)
+        self.edits: dict[str, QWidget] = {}
+        for key, (row, col) in posities.items():
             label = QLabel(labels[key])
             label.setObjectName("FieldLabel")
             edit = QLineEdit()
@@ -561,19 +878,251 @@ class MainWindow(QWidget):
             self.edits[key] = edit
             grid.addWidget(label, row * 2, col)
             grid.addWidget(edit, row * 2 + 1, col)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 1)
-        grid.setColumnStretch(2, 1)
-        grid.setRowMinimumHeight(1, 32)
-        grid.setRowMinimumHeight(3, 32)
-        grid.setRowMinimumHeight(5, 32)
-        # Commentaar over de volle breedte.
-        grid.addWidget(self.edits["comment"], 5, 0, 1, 3)
+        for col in range(3):
+            grid.setColumnStretch(col, 1)
+
+        # Commentaar en songtekst over de volle breedte; songtekst mag meerdere
+        # regels hebben.
+        comment_label = QLabel(labels["comment"])
+        comment_label.setObjectName("FieldLabel")
+        comment = QLineEdit()
+        comment.setPlaceholderText(placeholders["comment"])
+        comment.setClearButtonEnabled(True)
+        comment.returnPressed.connect(lambda: self.save_metadata(save_as=False))
+        self.edits["comment"] = comment
+        lyrics_label = QLabel(labels["lyrics"])
+        lyrics_label.setObjectName("FieldLabel")
+        lyrics = QPlainTextEdit()
+        lyrics.setPlaceholderText(placeholders["lyrics"])
+        lyrics.setFixedHeight(58)
+        self.edits["lyrics"] = lyrics
+
+        grid.addWidget(comment_label, 6, 0)
+        grid.addWidget(comment, 7, 0, 1, 3)
+        grid.addWidget(lyrics_label, 8, 0)
+        grid.addWidget(lyrics, 9, 0, 1, 3)
         outer.addLayout(grid)
         return card
 
     def _build_footer(self) -> QHBoxLayout:
         return QHBoxLayout()
+
+    # --------------------------------------------------- instellingen/recent --
+
+    def _restore_settings(self) -> None:
+        """Venster, volume, laatste map en afspeellijst terugzetten."""
+        geometry = self.settings.value("venster/geometrie")
+        if geometry:
+            self.restoreGeometry(geometry)
+        volume = self.settings.value("speler/volume")
+        if volume is not None:
+            try:
+                self.volume.setValue(int(volume))
+            except (TypeError, ValueError):
+                pass
+        self.player.setVolume(self.volume.value())
+
+        # Laatst geopende afspeellijst terugzetten; bestanden die weg zijn,
+        # slaan we stil over.
+        opgeslagen = self.settings.value("speler/afspeellijst", []) or []
+        for item in opgeslagen:
+            pad = str(item)
+            if Path(pad).is_file() and not self._in_playlist(pad):
+                self._append_playlist(pad)
+
+    def _save_settings(self) -> None:
+        self.settings.setValue("venster/geometrie", self.saveGeometry())
+        self.settings.setValue("speler/volume", self.volume.value())
+        self.settings.setValue("bestanden/laatste_map", self.last_dir)
+        self.settings.setValue("bestanden/recent", self.recent[:15])
+        self.settings.setValue("speler/afspeellijst", self._playlist_paths())
+        self.settings.sync()
+
+    def _remember_path(self, path: str) -> None:
+        """Onthoud het bestand en zijn map voor de volgende sessie."""
+        path = str(Path(path).resolve())
+        self.last_dir = str(Path(path).parent)
+        self.recent = [path] + [p for p in self.recent if p != path]
+        del self.recent[15:]
+        self.settings.setValue("bestanden/laatste_map", self.last_dir)
+        self.settings.setValue("bestanden/recent", self.recent)
+        self.settings.sync()
+
+    def _show_recent_menu(self) -> None:
+        menu = QMenu(self)
+        bestaand = [p for p in self.recent if Path(p).is_file()]
+        if not bestaand:
+            leeg = menu.addAction("Nog geen recente bestanden")
+            leeg.setEnabled(False)
+        for pad in bestaand:
+            actie = menu.addAction(Path(pad).name)
+            actie.setToolTip(pad)
+            actie.triggered.connect(lambda _=False, p=pad: self.open_path(p))
+        if bestaand:
+            menu.addSeparator()
+            wissen = menu.addAction("Lijst wissen")
+            wissen.triggered.connect(self._clear_recent)
+        menu.exec_(self.recent_btn.mapToGlobal(self.recent_btn.rect().bottomLeft()))
+
+    def _clear_recent(self) -> None:
+        self.recent = []
+        self.settings.setValue("bestanden/recent", [])
+        self.settings.sync()
+        self.set_status("Lijst met recente bestanden gewist.")
+
+    # -------------------------------------------------------- afspeellijst --
+
+    def _playlist_paths(self) -> list[str]:
+        paden = []
+        for i in range(self.playlist.count()):
+            pad = self.playlist.item(i).data(Qt.UserRole)
+            if pad:
+                paden.append(str(pad))
+        return paden
+
+    def _in_playlist(self, path: str) -> bool:
+        doel = str(Path(path).resolve())
+        return any(str(Path(p).resolve()) == doel for p in self._playlist_paths())
+
+    def _append_playlist(self, path: str) -> None:
+        item = QListWidgetItem(Path(path).name)
+        item.setData(Qt.UserRole, str(Path(path).resolve()))
+        item.setToolTip(str(path))
+        self.playlist.addItem(item)
+
+    def add_paths(self, paths: list[str]) -> None:
+        toegevoegd = 0
+        for pad in paths:
+            if Path(pad).is_file() and core.is_supported(pad) and not self._in_playlist(pad):
+                self._append_playlist(pad)
+                toegevoegd += 1
+        if toegevoegd:
+            self.set_status(f"{toegevoegd} bestand(en) aan de afspeellijst toegevoegd.")
+
+    def add_files_dialog(self) -> None:
+        patterns = " ".join(f"*{ext}" for ext in core.SUPPORTED_EXTS)
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Bestanden aan de afspeellijst toevoegen", self.last_dir,
+            f"Media-bestanden ({patterns});;Alle bestanden (*)",
+        )
+        if paths:
+            self.last_dir = str(Path(paths[0]).parent)
+            self.add_paths(paths)
+            if not self.media_path:
+                self.open_path(paths[0])
+
+    def _select_in_playlist(self, path: str) -> None:
+        doel = str(Path(path).resolve())
+        for i, pad in enumerate(self._playlist_paths()):
+            if pad == doel:
+                self.playlist.setCurrentRow(i)
+                return
+
+    def _on_playlist_activated(self, item: QListWidgetItem) -> None:
+        pad = item.data(Qt.UserRole)
+        if pad:
+            self.open_path(str(pad))
+
+    def _playlist_step(self, delta: int) -> None:
+        paden = self._playlist_paths()
+        if not paden:
+            return
+        huidig = str(Path(self.media_path).resolve()) if self.media_path else ""
+        try:
+            index = paden.index(huidig)
+        except ValueError:
+            index = -1
+        if index < 0:
+            index = 0 if delta > 0 else len(paden) - 1
+        else:
+            index = (index + delta) % len(paden)
+        self.open_path(paden[index])
+        self.playlist.setCurrentRow(index)
+
+    def playlist_next(self) -> None:
+        self._playlist_step(1)
+
+    def playlist_prev(self) -> None:
+        self._playlist_step(-1)
+
+    def playlist_remove_selected(self) -> None:
+        rijen = sorted(
+            (self.playlist.row(item) for item in self.playlist.selectedItems()),
+            reverse=True,
+        )
+        for rij in rijen:
+            self.playlist.takeItem(rij)
+        if rijen:
+            self.set_status(f"{len(rijen)} bestand(en) uit de afspeellijst gehaald.")
+        self.settings.setValue("speler/afspeellijst", self._playlist_paths())
+        self.settings.sync()
+
+    def playlist_clear(self) -> None:
+        self.playlist.clear()
+        self.settings.setValue("speler/afspeellijst", [])
+        self.settings.sync()
+        self.set_status("Afspeellijst leeggemaakt.")
+
+    def _auto_next(self) -> None:
+        """Na het einde van een bestand automatisch het volgende starten."""
+        paden = self._playlist_paths()
+        if len(paden) < 2 or not self.media_path:
+            return
+        huidig = str(Path(self.media_path).resolve())
+        if huidig not in paden:
+            return
+        if paden.index(huidig) < len(paden) - 1:
+            self.playlist_next()
+
+    # -------------------------------------------------------- frameknipsel --
+
+    def save_frame(self) -> None:
+        if not self.media_path:
+            return
+        if not self.info or not self.info.is_video:
+            self.notify(
+                "info", "Geen beeld",
+                "Dit bestand heeft geen videospoor, dus er is geen frame om op te slaan.",
+            )
+            return
+        bron = Path(self.media_path)
+        suggestie = str(bron.with_name(f"{bron.stem}-{self._frame_stamp()}.png"))
+        gekozen, _ = QFileDialog.getSaveFileName(
+            self, "Huidig beeld opslaan", suggestie,
+            "PNG-afbeelding (*.png);;JPEG-afbeelding (*.jpg *.jpeg)",
+        )
+        if not gekozen:
+            return
+        doel = Path(gekozen)
+        if doel.suffix.lower() not in (".png", ".jpg", ".jpeg"):
+            doel = doel.with_suffix(".png")
+        positie = self.player.position()
+        self.set_status("Frame opslaan…")
+        try:
+            core.extract_frame(self.media_path, doel, positie)
+        except (core.MediaError, core.FFmpegMissing) as exc:
+            self.set_status(str(exc).splitlines()[0], error=True)
+            self.notify("critical", "Frame opslaan mislukt", str(exc))
+            return
+        self.last_dir = str(doel.parent)
+        self.set_status(f"Frame opgeslagen: {doel.name}")
+        self.notify("info", "Frame opgeslagen", f"Opgeslagen als {doel}")
+
+    def _frame_stamp(self) -> str:
+        ms = max(0, self.player.position())
+        seconden = ms // 1000
+        return f"{seconden // 60:02d}m{seconden % 60:02d}s"
+
+    # -------------------------------------------------------------- batch --
+
+    def open_batch_dialog(self) -> None:
+        bestaand = [p for p in self._playlist_paths() if Path(p).is_file()]
+        if not bestaand and self.media_path:
+            bestaand = [self.media_path]
+        dialog = BatchDialog(bestaand, self)
+        if dialog.exec_() == QDialog.Accepted:
+            self.read_metadata()
+
 
     # ------------------------------------------------------------- speler --
 
@@ -585,6 +1134,7 @@ class MainWindow(QWidget):
         self.player.durationChanged.connect(self._on_duration)
         self.player.stateChanged.connect(self._on_state)
         self.player.error.connect(self._on_player_error)
+        self.player.mediaStatusChanged.connect(self._on_media_status)
 
     def _on_position(self, position: int) -> None:
         if not self._seeking:
@@ -603,6 +1153,10 @@ class MainWindow(QWidget):
         if playing and not self._playback_started:
             self._playback_started = True
             self.player_layout.setCurrentWidget(self.video)
+
+    def _on_media_status(self, status) -> None:
+        if status == QMediaPlayer.EndOfMedia:
+            self._auto_next()
 
     def _on_player_error(self, *_args) -> None:
         if self.player.error() == QMediaPlayer.NoError:
@@ -683,6 +1237,11 @@ class MainWindow(QWidget):
         self.read_metadata()
         self.setFocus(Qt.OtherFocusReason)
         self.set_status(f"Geopend: {Path(path).name}")
+        self._remember_path(path)
+        if not self._in_playlist(path):
+            self._append_playlist(path)
+        self._select_in_playlist(path)
+        self.settings.setValue("speler/afspeellijst", self._playlist_paths())
         self._sync_enabled()
 
     def _load_poster(self, path: str) -> None:
@@ -726,12 +1285,22 @@ class MainWindow(QWidget):
     # ------------------------------------------------------------ metadata --
 
     def current_values(self) -> dict:
-        return {key: edit.text().strip() for key, edit in self.edits.items()}
+        values = {}
+        for key, edit in self.edits.items():
+            if isinstance(edit, QPlainTextEdit):
+                values[key] = edit.toPlainText().strip()
+            else:
+                values[key] = edit.text().strip()
+        return values
 
     def set_values(self, values: dict) -> None:
         for key, edit in self.edits.items():
             edit.setStyleSheet("")
-            edit.setText(values.get(key, "") or "")
+            text = values.get(key, "") or ""
+            if isinstance(edit, QPlainTextEdit):
+                edit.setPlainText(text)
+            else:
+                edit.setText(text)
 
     def read_metadata(self) -> None:
         if not self.media_path:
@@ -798,6 +1367,10 @@ class MainWindow(QWidget):
         missing = [name for name, ok in matches.items() if not ok]
         for key, edit in self.edits.items():
             edit.setStyleSheet(self._unverified_style if key in missing else "")
+            if isinstance(edit, QPlainTextEdit):
+                edit.setStyleSheet(
+                    self._unverified_style if key in missing else ""
+                )
         elapsed = result.tags.pop("_elapsed_s", "")
         if elapsed:
             elapsed = elapsed.replace(".", ",")
@@ -836,7 +1409,8 @@ class MainWindow(QWidget):
         self.notify("critical", "Opslaan mislukt", message)
 
     def _set_busy(self, busy: bool) -> None:
-        for widget in (self.save_btn, self.save_as_btn, self.read_btn, self.open_btn):
+        for widget in (self.save_btn, self.save_as_btn, self.read_btn, self.open_btn,
+                       self.frame_btn, self.batch_btn):
             widget.setEnabled(not busy)
         self.progress.setVisible(busy)
         QApplication.setOverrideCursor(Qt.BusyCursor) if busy else QApplication.restoreOverrideCursor()
@@ -844,7 +1418,8 @@ class MainWindow(QWidget):
     def _sync_enabled(self) -> None:
         has_media = bool(self.media_path) and self._worker is None
         for widget in (self.save_btn, self.save_as_btn, self.read_btn,
-                       self.play_btn, self.back_btn, self.forward_btn):
+                       self.play_btn, self.back_btn, self.forward_btn,
+                       self.frame_btn):
             widget.setEnabled(has_media)
         self.timeline.setEnabled(has_media)
 
@@ -885,7 +1460,11 @@ class MainWindow(QWidget):
     def dropEvent(self, event):
         urls = event.mimeData().urls()
         if urls:
-            self.open_path(urls[0].toLocalFile() or urls[0].toString())
+            paden = [u.toLocalFile() or u.toString() for u in urls]
+            paden = [p for p in paden if core.is_supported(p)]
+            if paden:
+                self.add_paths(paden[1:])
+                self.open_path(paden[0])
             event.acceptProposedAction()
 
     # ------------------------------------------------------------- toetsen --
@@ -923,6 +1502,31 @@ class MainWindow(QWidget):
         if modifiers == (Qt.ControlModifier | Qt.ShiftModifier) and key == Qt.Key_S:
             self.save_metadata(save_as=True)
             return
+        if modifiers == Qt.ControlModifier and key == Qt.Key_K:
+            self.save_frame()
+            return
+        if modifiers == Qt.ControlModifier and key == Qt.Key_B:
+            self.open_batch_dialog()
+            return
+        if modifiers == Qt.ControlModifier and key == Qt.Key_Y:
+            self.add_files_dialog()
+            return
+        if key == Qt.Key_N:
+            self.playlist_next()
+            return
+        if key == Qt.Key_P:
+            self.playlist_prev()
+            return
+        if key == Qt.Key_Delete:
+            self.playlist_remove_selected()
+            return
+        if key == Qt.Key_Home:
+            self.player.setPosition(0)
+            self.timeline.setValue(0)
+            return
+        if key == Qt.Key_End and self.player.duration():
+            self.player.setPosition(self.player.duration())
+            return
         super().keyPressEvent(event)
 
     def closeEvent(self, event):
@@ -930,6 +1534,7 @@ class MainWindow(QWidget):
             self._worker.cancel()
             self._worker.wait(3000)
         self.player.stop()
+        self._save_settings()
         super().closeEvent(event)
 
     # -------------------------------------------------------------- update --

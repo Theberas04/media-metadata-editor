@@ -115,6 +115,44 @@ def selftest() -> int:
     assert not missing, f"kern-schrijfactie niet gelukt: {missing} ontbreekt"
     log("selftest: kern-schrijfactie en teruglezen ok")
 
+    # Nieuwe velden: albumartiest, track, componist en songtekst moeten ook
+    # aankomen (dat is de kern van "meer velden").
+    extra_values = {
+        "albumartist": "Werdens Media",
+        "track": "3/12",
+        "composer": "Hermes",
+        "lyrics": "Eerste regel\nTweede regel",
+    }
+    core.write_tags(sample, None, {**probe_values, **extra_values})
+    extra_info = core.probe(str(sample))
+    ontbreekt = [k for k, v in extra_values.items()
+                 if not core.tags_match({k: v}, extra_info).get(k)]
+    assert not ontbreekt, f"nieuwe velden niet gelukt: {ontbreekt}"
+    log("selftest: nieuwe velden (albumartiest, track, componist, songtekst) ok")
+
+    # Frameknipsel: uit een echt videobestand één frame naar PNG.
+    video = workdir / "selftest.mp4"
+    subprocess.run(
+        [core.find_ffmpeg(), "-hide_banner", "-loglevel", "error", "-y",
+         "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=15:duration=2",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+         "-shortest", str(video)],
+        check=True, capture_output=True,
+    )
+    frame = workdir / "frame.png"
+    core.extract_frame(str(video), frame, 1000)
+    assert frame.is_file() and frame.stat().st_size > 500, "frame niet opgeslagen"
+    log(f"selftest: frameknipsel ok ({frame.stat().st_size} bytes)")
+
+    # Batchverwerking: twee bestanden in één keer, met controle per bestand.
+    batch_a = workdir / "batch-a.mp3"
+    batch_b = workdir / "batch-b.mp3"
+    for bestand in (batch_a, batch_b):
+        bestand.write_bytes(sample.read_bytes())
+    rapport = core.batch_write([batch_a, batch_b], {"genre": "Zelftest"})
+    assert len(rapport) == 2 and all(r["ok"] for r in rapport), f"batch: {rapport}"
+    log("selftest: batchverwerking ok (2 bestanden)")
+
     app = QApplication([])  # noqa: F841 - houdt de UI in leven
     window = MainWindow(autoupdate=False)
     window.resize(1000, 800)
@@ -124,9 +162,19 @@ def selftest() -> int:
 
     assert window.edits["title"].text() == "Kerncontrole", "metadata niet ingelezen"
     assert window.edits["artist"].text() == "Hermes", "artiest niet ingelezen"
-    log("selftest: UI gebouwd en metadata gelezen")
+    assert window.edits["albumartist"].text() == "Werdens Media", "albumartiest niet ingelezen"
+    assert set(window.edits) == set(core.FIELDS), "niet alle velden in de UI"
+    log(f"selftest: UI gebouwd met {len(window.edits)} velden en metadata gelezen")
+
+    # Afspeellijst, recente bestanden en de laatste map.
+    window.add_paths([str(batch_a), str(batch_b)])
+    assert window.playlist.count() >= 3, f"afspeellijst: {window.playlist.count()}"
+    assert window.recent and window.recent[0].endswith(".mp3"), "recent niet bijgehouden"
+    assert window.last_dir, "laatste map niet onthouden"
+    log(f"selftest: afspeellijst {window.playlist.count()} bestanden, recent en laatste map ok")
 
     window.edits["title"].setText("Zelftest na opslaan")
+    window.edits["lyrics"].setPlainText("regel een\nregel twee")
     window.edits["album"].setText("Controle")
     window.save_metadata(save_as=False)
     deadline = time.time() + 90

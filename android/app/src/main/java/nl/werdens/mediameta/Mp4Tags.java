@@ -28,12 +28,21 @@ import java.util.Map;
  */
 public final class Mp4Tags {
 
-    public static final String[] KEYS = {"title", "artist", "album", "genre", "year", "comment"};
+    public static final String[] KEYS = {
+            "title", "artist", "albumartist", "album", "track", "disc",
+            "genre", "year", "composer", "comment", "lyrics"
+    };
 
     /** iTunes-atomen die bij de sleutels horen (0xA9 is het ©-teken). */
     private static final String[] ATOMS = {
-            "\u00A9nam", "\u00A9ART", "\u00A9alb", "\u00A9gen", "\u00A9day", "\u00A9cmt"
+            "\u00A9nam", "\u00A9ART", "aART", "\u00A9alb", "trkn", "disk",
+            "\u00A9gen", "\u00A9day", "\u00A9wrt", "\u00A9cmt", "\u00A9lyr"
     };
+
+    /** trkn en disk zijn binair (nummer + totaal), niet UTF-8. */
+    private static boolean isBinaryAtom(String atom) {
+        return atom.equals("trkn") || atom.equals("disk");
+    }
 
     private static final String[] CONTAINERS = {
             "moov", "trak", "mdia", "minf", "stbl", "edts", "dinf", "udta", "mvex",
@@ -63,6 +72,22 @@ public final class Mp4Tags {
         }
         for (int i = 0; i < KEYS.length; i++) {
             String value = byAtom.get(ATOMS[i]);
+            if (isBinaryAtom(ATOMS[i])) {
+                Box item = null;
+                for (Box candidate : parseChildren(moov, ilst.contentStart, ilst.end)) {
+                    if (candidate.type.equals(ATOMS[i])) {
+                        item = candidate;
+                        break;
+                    }
+                }
+                if (item != null) {
+                    Box data = find(parseChildren(moov, item.contentStart, item.end), "data");
+                    tags.put(KEYS[i], data == null ? "" : decodePair(moov, data));
+                } else {
+                    tags.put(KEYS[i], "");
+                }
+                continue;
+            }
             if (value == null && ATOMS[i].equals("\u00A9gen")) {
                 String numeric = byAtom.get("gnre");
                 if (numeric != null) {
@@ -206,7 +231,11 @@ public final class Mp4Tags {
         }
         for (int i = 0; i < KEYS.length; i++) {
             String value = values.get(KEYS[i]);
-            ilstContent.writeBytes(buildItem(ATOMS[i], value == null ? "" : value));
+            if (isBinaryAtom(ATOMS[i])) {
+                ilstContent.writeBytes(buildPairItem(ATOMS[i], value == null ? "" : value));
+            } else {
+                ilstContent.writeBytes(buildItem(ATOMS[i], value == null ? "" : value));
+            }
         }
 
         ByteArrayOutputStream udtaContent = new ByteArrayOutputStream();
@@ -242,6 +271,55 @@ public final class Mp4Tags {
         ByteArrayOutputStream content = new ByteArrayOutputStream();
         content.writeBytes(box("data", data.toByteArray()));
         return box(atom, content.toByteArray());
+    }
+
+    /** trkn/disk: 2 lege bytes, nummer, totaal, 2 lege bytes (type 0 = binair). */
+    private static byte[] buildPairItem(String atom, String value) {
+        int nummer = 0;
+        int totaal = 0;
+        String tekst = value == null ? "" : value.trim();
+        if (!tekst.isEmpty()) {
+            String[] delen = tekst.split("/");
+            try {
+                nummer = Integer.parseInt(delen[0].trim());
+            } catch (NumberFormatException ignored) {
+                nummer = 0;
+            }
+            if (delen.length > 1) {
+                try {
+                    totaal = Integer.parseInt(delen[1].trim());
+                } catch (NumberFormatException ignored) {
+                    totaal = 0;
+                }
+            }
+        }
+        ByteArrayOutputStream payload = new ByteArrayOutputStream();
+        payload.writeBytes(u32(0));      // type 0 = impliciet/binair
+        payload.writeBytes(u32(0));      // locale
+        payload.write(0);
+        payload.write(0);
+        payload.write((nummer >> 8) & 0xFF);
+        payload.write(nummer & 0xFF);
+        payload.write((totaal >> 8) & 0xFF);
+        payload.write(totaal & 0xFF);
+        payload.write(0);
+        payload.write(0);
+        ByteArrayOutputStream content = new ByteArrayOutputStream();
+        content.writeBytes(box("data", payload.toByteArray()));
+        return box(atom, content.toByteArray());
+    }
+
+    private static String decodePair(byte[] data, Box box) {
+        int start = box.contentStart + 8;
+        if (box.end - start < 6) {
+            return "";
+        }
+        int nummer = ((data[start + 2] & 0xFF) << 8) | (data[start + 3] & 0xFF);
+        int totaal = ((data[start + 4] & 0xFF) << 8) | (data[start + 5] & 0xFF);
+        if (nummer == 0) {
+            return "";
+        }
+        return totaal > 0 ? nummer + "/" + totaal : String.valueOf(nummer);
     }
 
     private static byte[] buildMetaBox(byte[] ilstBytes) {

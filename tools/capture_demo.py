@@ -103,8 +103,13 @@ def main() -> int:
             raise SystemExit(f"demo-media ontbreekt: {path} (eerst tools/make_demo_media.py)")
 
     app = QApplication(sys.argv)
+    # Begin met schone instellingen: anders slepen er bestanden van eerdere
+    # runs (of tests) in de afspeellijst op de screenshots.
+    from PyQt5.QtCore import QSettings
+
+    QSettings("Werdens Media", "Media Metadata Editor").clear()
     window = MainWindow(autoupdate=False)
-    window.resize(1120, 860)
+    window.resize(1320, 920)
     window.show()
     app.processEvents()
 
@@ -112,6 +117,9 @@ def main() -> int:
     session = Session(window, app, frames_dir)
     stills_dir = (ROOT / ns.stills) if not os.path.isabs(ns.stills) else Path(ns.stills)
 
+    # De afspeellijst vast vullen, zodat die op beeld laat zien wat hij doet.
+    window.add_paths([str(video_file), str(audio_file)])
+    window.set_status("Klaar om een mediabestand te openen.")
     session.pump(1.6)
     session.still(stills_dir / "01-startscherm.png")
 
@@ -124,19 +132,28 @@ def main() -> int:
     values = {
         "title": "Zonsopkomst boven de Wadden (definitief)",
         "artist": "Werdens Media",
+        "albumartist": "Werdens Media",
         "album": "Waddenreeks 2026",
+        "track": "3/12",
+        "disc": "1/1",
         "genre": "Documentaire",
         "year": "2026",
+        "composer": "Tom Werdens",
         "comment": "definitief, klant, 4K master",
+        "lyrics": "Eerste licht boven het wad\nDe vloed komt langzaam op",
     }
     if not ns.no_typing:
         session.type_into(window.edits["title"], values["title"], 1, 0.055)
         session.type_into(window.edits["album"], values["album"], 1, 0.055)
+        session.type_into(window.edits["albumartist"], values["albumartist"], 1, 0.055)
+        window.edits["track"].setText(values["track"])
+        window.edits["disc"].setText(values["disc"])
+        session.type_into(window.edits["composer"], values["composer"], 1, 0.055)
         session.type_into(window.edits["comment"], values["comment"], 1, 0.055)
     else:
         window.set_values(values)
         session.pump(0.3)
-    expected = {key: window.edits[key].text() for key in window.edits}
+    expected = window.current_values()
     session.pump(0.4)
     session.still(stills_dir / "03-metadata-bewerkt.png")
 
@@ -162,10 +179,30 @@ def main() -> int:
     session.pump(1.4)
     session.still(stills_dir / "06-audio-met-cover.png")
 
-    # Terug naar de video, zodat de demo-video netjes eindigt.
+    # Terug naar de video; daarna een frame uit het beeld opslaan.
     window.open_path(str(video_file))
     session.pump(1.0)
     session.still(stills_dir / "07-video-opnieuw.png")
+
+    frame_out = media_dir / "frame-uit-de-app.png"
+    window.player.setPosition(4000)
+    session.pump(0.6)
+    core.extract_frame(str(video_file), frame_out, 4000)
+    window.set_status(f"Frame opgeslagen: {frame_out.name}")
+    session.pump(0.5)
+    session.still(stills_dir / "08-frame-opgeslagen.png")
+
+    # Het batchvenster, met de bestanden uit de afspeellijst.
+    from mediameta.ui import BatchDialog
+
+    dialoog = BatchDialog([str(video_file), str(audio_file)], window)
+    dialoog.resize(740, 820)
+    dialoog.show()
+    session.pump(0.8)
+    dialoog.grab().save(str(stills_dir / "09-batch.png"), "PNG")
+    print(f"  screenshot: {stills_dir / '09-batch.png'}")
+    dialoog.close()
+    session.pump(0.3)
 
     if frames_dir and ns.video:
         out = (ROOT / ns.video) if not os.path.isabs(ns.video) else Path(ns.video)
