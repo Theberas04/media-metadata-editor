@@ -26,7 +26,14 @@ android {
         applicationId = "nl.werdens.mediameta"
         minSdk = 23
         targetSdk = 35
-        versionCode = 1
+        // versionCode moet bij elke update omhoog, anders weigert Android de
+        // nieuwe APK over de oude te installeren. 1.1.0 -> 10100.
+        versionCode = appVersion.split(".").let { delen ->
+            val cijfers = delen.map { it.toIntOrNull() ?: 0 }
+            cijfers.getOrElse(0) { 0 } * 10000 +
+                cijfers.getOrElse(1) { 0 } * 100 +
+                cijfers.getOrElse(2) { 0 }
+        }
         versionName = appVersion
     }
 
