@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Media Metadata</string>
-    <string name="app_subtitle">Bekijk en bewerk titel, artiest, album, genre en jaar</string>
+    <string name="app_subtitle">Bekijk en bewerk elf velden (o.a. albumartiest, track, componist en songtekst), knip een frame of verwerk een hele map</string>
 
     <string name="open_file">Bestand openen</string>
     <string name="read_again">Opnieuw lezen</string>

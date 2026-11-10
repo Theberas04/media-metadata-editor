@@ -27,7 +27,7 @@ android {
         minSdk = 23
         targetSdk = 35
         // versionCode moet bij elke update omhoog, anders weigert Android de
-        // nieuwe APK over de oude te installeren. 1.1.0 -> 10100.
+        // nieuwe APK over de oude te installeren. 1.1.1 -> 10101.
         versionCode = appVersion.split(".").let { delen ->
             val cijfers = delen.map { it.toIntOrNull() ?: 0 }
             cijfers.getOrElse(0) { 0 } * 10000 +

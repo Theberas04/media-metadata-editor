@@ -36,6 +36,10 @@ eromheen. Windows-versie, Android-app en de broncode staan in deze repository.
   (volledig scherm), Delete (uit de lijst).
 - **Bijwerken**: de app controleert zelf bij het starten of er een nieuwe versie
   is en werkt bij met een sha256-controle vóór er iets vervangen wordt.
+- **Eigen merk**: het Werdens Media-merk staat linksboven in het venster en is
+  het programma-icoon (Windows) en het launcher-icoon (Android).
+
+![icoon](docs/logo/icoon-256.png)
 
 ## Installeren
 
@@ -113,8 +117,11 @@ fouten op die in de praktijk het meest opvallen:
 8. **ffmpeg zit erbij** in de Windows-versie, met een duidelijke melding als hij
    toch ontbreekt.
 9. **Eigen logo, icoon en Nederlandse interface**; de donkere speler en rustige
-   opmaak zijn bewust: één primaire actie, de rest secundair.
-10. **15 tests tegen echte mediabestanden** (lezen, schrijven, unicode,
+   opmaak zijn bewust: één primaire actie, de rest secundair. Het app-icoon komt
+   uit hetzelfde bronbeeld als het logo: `tools/prepare_werdens_logo.py` maakt het
+   merk vrijstaand, `tools/make_branding.py` tekent het Windows-icoon en
+   `tools/make_android_icons.py` de Android-iconen (gewoon, rond en adaptief).
+10. **25 tests tegen echte mediabestanden** (lezen, schrijven, unicode,
     cover-art, video-tags, voortgang, terugvalweg zonder ffprobe).
 
 ## Zelf bouwen
@@ -146,7 +153,7 @@ mediameta/core.py          ffmpeg/ffprobe: lezen, schrijven, poster
 mediameta/ui.py            Qt-venster, speler, formulier, sneltoetsen
 mediameta/updater.py       bijwerken via GitHub Releases + sha256
 tests/test_core.py         tests tegen echte mediabestanden
-tools/                     demo-media, opname, logo
+tools/                     demo-media, opname, logo/icoon
 android/                   Kotlin-app met dezelfde functie op de telefoon
 ```
 

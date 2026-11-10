@@ -4,6 +4,17 @@ Dezelfde functie als de Windows-versie, op de telefoon: mediabestand openen,
 afspelen, metadata bekijken en aanpassen, en terugschrijven naar hetzelfde
 bestand.
 
+## Wat de app doet
+
+- **Elf velden**: titel, artiest, albumartiest, album, tracknummer, schijf, genre,
+  jaar, componist, commentaar en songtekst.
+- **Frame opslaan en delen**: het beeld dat je ziet bewaren als PNG of JPG en via
+  een andere app doorsturen.
+- **Bijwerken**: bij het starten controleert de app of er een nieuwere versie is
+  en toont dan een balk met de downloadlink; Android installeert nooit stil.
+- **Merk**: het Werdens Media-merk linksboven in de app en als launcher-icoon
+  (gewoon, rond en adaptief) via `tools/make_android_icons.py`.
+
 ## Installeren
 
 Download `app-release.apk` uit de laatste release en open hem op de telefoon
@@ -60,7 +71,9 @@ commentaar), en controleert daarna met `ffprobe`:
 - decodeert het bestand nog echt (één frame video + één seconde audio).
 
 De CI doet hetzelfde en bouwt daarna de APK, ondertekent hem en start hem op een
-emulator om te controleren dat hij echt opent.
+emulator om te controleren dat hij echt opent. Die proef maakt ook
+controlebeelden van het scherm (met het nieuwe launcher-icoon) en bewaart ze als
+artifact.
 
 ## Zelf bouwen
 

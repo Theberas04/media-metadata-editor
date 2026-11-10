@@ -1,8 +1,12 @@
-"""Genereert de Android-launchericonen uit dezelfde tekening als het logo.
+"""Genereert de Android-launchericonen uit het Werdens Media-merk.
 
 Gebruik: python tools/make_android_icons.py
 Uitvoer: android/app/src/main/res/mipmap-*/ic_launcher[_round].png
          android/app/src/main/res/drawable-nodpi/ic_launcher_foreground.png
+         docs/logo/android-icoon-<dichtheid>.png (controlebeelden)
+
+Hetzelfde merk wordt ook voor Windows gebruikt (tools/make_branding.py); de
+tekening zelf staat in tools/brand_icon.py, zodat beide platformen gelijk zijn.
 """
 
 from __future__ import annotations
@@ -13,10 +17,12 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtCore import QPointF, QRectF, Qt  # noqa: E402
-from PyQt5.QtGui import QColor, QGuiApplication, QPainter, QPixmap, QPolygonF  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-ROOT = Path(__file__).resolve().parent.parent
+from brand_icon import ROOT, draw_foreground, draw_icon  # noqa: E402
+
+from PyQt5.QtGui import QGuiApplication  # noqa: E402
+
 RES = ROOT / "android" / "app" / "src" / "main" / "res"
 
 DENSITIES = {
@@ -27,61 +33,34 @@ DENSITIES = {
     "xxxhdpi": 192,
 }
 
-NAVY = "#0f172a"
-BLUE = "#2563eb"
-WHITE = "#ffffff"
-
-
-def draw_mark(pixmap: QPixmap, plate: bool) -> QPixmap:
-    size = pixmap.width()
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.Antialiasing, True)
-    painter.setPen(Qt.NoPen)
-
-    if plate:
-        painter.setBrush(QColor(NAVY))
-        radius = size * 0.22
-        painter.drawRoundedRect(QRectF(0, 0, size, size), radius, radius)
-
-    # Voor het adaptieve icoon staat het beeld in de veilige zone (ongeveer 62%).
-    scale = 0.62 if not plate else 0.62
-    diameter = size * scale
-    offset = (size - diameter) / 2
-    painter.setBrush(QColor(BLUE))
-    painter.drawEllipse(QRectF(offset, offset, diameter, diameter))
-
-    painter.setBrush(QColor(WHITE))
-    cx, cy = size * 0.53, size * 0.5
-    half = diameter * 0.24
-    painter.drawPolygon(QPolygonF([
-        QPointF(cx - half * 0.75, cy - half),
-        QPointF(cx - half * 0.75, cy + half),
-        QPointF(cx + half, cy),
-    ]))
-    painter.end()
-    return pixmap
-
-
-def render(size: int, plate: bool) -> QPixmap:
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.transparent)
-    return draw_mark(pixmap, plate)
-
 
 def main() -> int:
-    app = QGuiApplication(sys.argv)  # noqa: F841
+    app = QGuiApplication(sys.argv)  # noqa: F841 - nodig voor QPixmap
+
+    preview_dir = ROOT / "docs" / "logo"
+    preview_dir.mkdir(parents=True, exist_ok=True)
+
     for density, size in DENSITIES.items():
         directory = RES / f"mipmap-{density}"
         directory.mkdir(parents=True, exist_ok=True)
-        icon = render(size, plate=True)
-        icon.save(str(directory / "ic_launcher.png"), "PNG")
-        icon.save(str(directory / "ic_launcher_round.png"), "PNG")
+
+        square = draw_icon(size, plate="rounded")
+        square.save(str(directory / "ic_launcher.png"), "PNG")
+
+        # Een rond icoon heeft geen hoeken: een schijf als vlak en het merk iets
+        # kleiner, zodat de puntige uiteinden binnen de cirkel blijven.
+        round_icon = draw_icon(size, plate="circle", coverage=0.68)
+        round_icon.save(str(directory / "ic_launcher_round.png"), "PNG")
+
+        if density == "xxxhdpi":
+            round_icon.save(str(preview_dir / "android-icoon-rond.png"), "PNG")
+            square.save(str(preview_dir / "android-icoon-vierkant.png"), "PNG")
         print(f"mipmap-{density}: {size}x{size}")
 
     foreground_dir = RES / "drawable-nodpi"
     foreground_dir.mkdir(parents=True, exist_ok=True)
-    render(432, plate=False).save(str(foreground_dir / "ic_launcher_foreground.png"), "PNG")
-    print("adaptive foreground: 432x432")
+    draw_foreground(432).save(str(foreground_dir / "ic_launcher_foreground.png"), "PNG")
+    print("adaptive foreground: 432x432 (veilige zone)")
     return 0
 
 

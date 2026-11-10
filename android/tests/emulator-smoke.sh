@@ -76,4 +76,19 @@ assert width > 300 and height > 600, f"onverwachte afmetingen {width}x{height}"
 print(f"screenshot ok: {width}x{height}, {len(data)} bytes")
 PY
 
+echo "== launcher-icoon (best effort) =="
+# Naar het beginscherm en de ladenlijst openen, zodat het icoon te zien is.
+# Lukt dat niet (andere launcher), dan is dat geen fout: het is een controlebeeld.
+adb shell input keyevent KEYCODE_HOME >/dev/null 2>&1 || true
+sleep 3
+adb exec-out screencap -p > "$OUT/android-beginscherm.png" || true
+adb shell input swipe 540 1800 540 600 300 >/dev/null 2>&1 || true
+sleep 3
+adb exec-out screencap -p > "$OUT/android-lade.png" || true
+for shot in android-beginscherm.png android-lade.png; do
+  if [ -s "$OUT/$shot" ]; then
+    echo "$shot: $(wc -c < "$OUT/$shot") bytes"
+  fi
+done
+
 echo "== klaar =="

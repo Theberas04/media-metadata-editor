@@ -599,7 +599,7 @@ class MainWindow(QWidget):
         titles.setSpacing(1)
         name = QLabel("Media Metadata Editor")
         name.setObjectName("AppName")
-        subtitle = QLabel("Bekijk en bewerk titel, artiest, album, genre, jaar, hoes en meer")
+        subtitle = QLabel("Bekijk en bewerk elf velden, knip een frame of verwerk een hele map")
         subtitle.setObjectName("AppSub")
         titles.addWidget(name)
         titles.addWidget(subtitle)
