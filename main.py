@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -57,6 +58,19 @@ def selftest() -> int:
                 out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
             except OSError:
                 pass
+
+    stap = {"nu": "start"}
+
+    def watchdog(seconds: float = 120.0) -> None:
+        time.sleep(seconds)
+        log(f"selftest: TIMEOUT bij stap '{stap['nu']}' na {seconds:.0f} seconden")
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
+        os._exit(4)
+
+    threading.Thread(target=watchdog, daemon=True).start()
 
     log("selftest: start")
     log(f"selftest: python {sys.version.split()[0]}, frozen={bool(getattr(sys, 'frozen', False))}")
@@ -109,6 +123,7 @@ def selftest() -> int:
 
     # Eerst de kern: kan deze build metadata wegschrijven en teruglezen?
     probe_values = {"title": "Kerncontrole", "artist": "Hermes", "album": "Controle"}
+    stap["nu"] = "kern-schrijfactie"
     core.write_tags(sample, None, probe_values)
     core_info = core.probe(str(sample))
     missing = [k for k, v in probe_values.items() if core_info.tag(k) != v]
@@ -123,14 +138,18 @@ def selftest() -> int:
         "composer": "Hermes",
         "lyrics": "Eerste regel\nTweede regel",
     }
-    core.write_tags(sample, None, {**probe_values, **extra_values})
-    extra_info = core.probe(str(sample))
+    stap["nu"] = "nieuwe velden"
+    extra_file = workdir / "selftest-extra.mp3"
+    extra_file.write_bytes(sample.read_bytes())
+    core.write_tags(extra_file, None, {**probe_values, **extra_values})
+    extra_info = core.probe(str(extra_file))
     ontbreekt = [k for k, v in extra_values.items()
                  if not core.tags_match({k: v}, extra_info).get(k)]
     assert not ontbreekt, f"nieuwe velden niet gelukt: {ontbreekt}"
     log("selftest: nieuwe velden (albumartiest, track, componist, songtekst) ok")
 
     # Frameknipsel: uit een echt videobestand één frame naar PNG.
+    stap["nu"] = "frameknipsel"
     video = workdir / "selftest.mp4"
     subprocess.run(
         [core.find_ffmpeg(), "-hide_banner", "-loglevel", "error", "-y",
@@ -149,15 +168,18 @@ def selftest() -> int:
     batch_b = workdir / "batch-b.mp3"
     for bestand in (batch_a, batch_b):
         bestand.write_bytes(sample.read_bytes())
+    stap["nu"] = "batchverwerking"
     rapport = core.batch_write([batch_a, batch_b], {"genre": "Zelftest"})
     assert len(rapport) == 2 and all(r["ok"] for r in rapport), f"batch: {rapport}"
     log("selftest: batchverwerking ok (2 bestanden)")
 
     app = QApplication([])  # noqa: F841 - houdt de UI in leven
+    stap["nu"] = "venster bouwen"
     window = MainWindow(autoupdate=False)
     window.resize(1000, 800)
     window.show()
-    window.open_path(str(sample))
+    stap["nu"] = "metadata lezen in de UI"
+    window.open_path(str(extra_file))
     app.processEvents()
 
     assert window.edits["title"].text() == "Kerncontrole", "metadata niet ingelezen"
@@ -173,6 +195,7 @@ def selftest() -> int:
     assert window.last_dir, "laatste map niet onthouden"
     log(f"selftest: afspeellijst {window.playlist.count()} bestanden, recent en laatste map ok")
 
+    stap["nu"] = "opslaan via de UI"
     window.edits["title"].setText("Zelftest na opslaan")
     window.edits["lyrics"].setPlainText("regel een\nregel twee")
     window.edits["album"].setText("Controle")
@@ -188,7 +211,7 @@ def selftest() -> int:
 
     warnings: list[str] = []
     if ui_save:
-        info = core.probe(str(sample))
+        info = core.probe(str(extra_file))
         if info.tag("title") == "Zelftest na opslaan" and info.tag("album") == "Controle":
             log("selftest: opslaan via de UI gecontroleerd")
         else:
@@ -204,7 +227,7 @@ def selftest() -> int:
         )
         log("selftest: LET OP - GUI-opslagweg niet gemeten op deze runner")
 
-    poster = core.poster_image(str(sample), workdir / "poster.png")
+    poster = core.poster_image(str(extra_file), workdir / "poster.png")
     log(f"selftest: poster = {'ja' if poster else 'geen (audiobestand zonder cover)'}")
 
     report = {
