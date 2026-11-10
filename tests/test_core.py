@@ -242,6 +242,39 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(len(rapport), 1)
         self.assertFalse(rapport[0]["ok"])
 
+    def test_ffmetadata_parser_keeps_line_breaks(self):
+        """Zonder ffprobe leest de app via ffmetadata; regeleinden mogen niet plakken."""
+        ruw = (
+            ";FFMETADATA1\n"
+            "lyrics=Eerste regel\\\n"
+            "Tweede regel\n"
+            "title=Titel\n"
+        )
+        tags = core.parse_ffmetadata(ruw)
+        self.assertEqual(tags["title"], "Titel")
+        self.assertEqual(tags["lyrics"], "Eerste regel\nTweede regel")
+
+    def test_probe_without_ffprobe_reads_all_fields(self):
+        """Het terugvalpad (Windows-build zonder ffprobe) moet dezelfde tags zien."""
+        bron = Path(tempfile.mkdtemp(prefix="mediameta-fallback-")) / "proef.mp3"
+        shutil.copy2(self.mp3, bron)
+        waarden = {
+            "title": "Titel", "artist": "Artiest", "albumartist": "Werdens Media",
+            "track": "3/12", "disc": "1/2", "composer": "Componist",
+            "lyrics": "Eerste regel\nTweede regel",
+        }
+        core.write_tags(bron, None, waarden)
+        bewaard = core.find_ffprobe
+        core.find_ffprobe = lambda: None
+        try:
+            info = core.probe(str(bron))
+        finally:
+            core.find_ffprobe = bewaard
+        self.assertEqual(info.probe_source, "ffmpeg")
+        ontbreekt = [k for k, v in waarden.items()
+                     if not core.tags_match({k: v}, info).get(k)]
+        self.assertEqual(ontbreekt, [])
+
     def test_helpers(self):
         self.assertEqual(core.format_duration(0), "00:00")
         self.assertEqual(core.format_duration(65000), "01:05")
