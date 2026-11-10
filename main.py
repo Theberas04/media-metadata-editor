@@ -25,7 +25,21 @@ def main() -> int:
     if "--selftest" in sys.argv:
         # Geen modale vensters in een run zonder scherm; die wachten op een klik.
         os.environ.setdefault("MEDIA_META_HEADLESS", "1")
-        return selftest()
+        # Een onafgevangen fout opent in een --windowed exe een foutvenster dat
+        # op een klik wacht. In een self-test nooit: gewoon met code 1 stoppen.
+        try:
+            return selftest()
+        except SystemExit:
+            raise
+        except BaseException as exc:  # noqa: BLE001
+            import traceback
+
+            try:
+                print(f"selftest: FOUT {exc!r}", flush=True)
+                traceback.print_exc()
+            except Exception:
+                pass
+            return 1
 
     from mediameta.ui import run
 

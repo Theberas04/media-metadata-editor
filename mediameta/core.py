@@ -261,13 +261,19 @@ def human_size(num_bytes: int) -> str:
 
 
 def _ffmetadata_unescape(value: str) -> str:
-    """Keert de escaping van het ffmetadata-formaat terug."""
+    """Keert de escaping van het ffmetadata-formaat terug.
+
+    ffmetadata schrijft een regeleinde als de twee tekens `\n`; zonder deze
+    vertaling plakt een songtekst aan elkaar tot `regelnregel`.
+    """
+    vertaling = {"n": "\n", "r": "\r", "t": "\t", "\\": "\\"}
     out: list[str] = []
     i = 0
     while i < len(value):
         char = value[i]
         if char == "\\" and i + 1 < len(value):
-            out.append(value[i + 1])
+            volgende = value[i + 1]
+            out.append(vertaling.get(volgende, volgende))
             i += 2
             continue
         out.append(char)
@@ -275,11 +281,34 @@ def _ffmetadata_unescape(value: str) -> str:
     return "".join(out)
 
 
+def _is_continuation(line: str) -> bool:
+    """Eindigt de regel op een enkele backslash? Dan loopt de waarde door."""
+    teller = 0
+    for char in reversed(line):
+        if char != "\\":
+            break
+        teller += 1
+    return teller % 2 == 1
+
+
 def parse_ffmetadata(text: str) -> dict:
-    """Parseert de uitvoer van `ffmpeg -f ffmetadata -` naar een tag-dict."""
+    """Parseert de uitvoer van `ffmpeg -f ffmetadata -` naar een tag-dict.
+
+    ffmetadata zet een regeleinde in een waarde als een backslash plus een
+    nieuwe regel. Zonder die regels samen te voegen raakt een songtekst zijn
+    tweede regel kwijt.
+    """
     tags: dict[str, str] = {}
+    samengevoegd = ""
     for raw in text.splitlines():
-        line = raw.strip()
+        if samengevoegd:
+            samengevoegd = samengevoegd[:-1] + "\n" + raw
+        else:
+            samengevoegd = raw
+        if _is_continuation(samengevoegd):
+            continue
+        line = samengevoegd.strip()
+        samengevoegd = ""
         if not line or line.startswith(";") or line.startswith("#") or line.startswith("["):
             continue
         if "=" not in line:
@@ -609,8 +638,8 @@ def tags_match(expected: dict, info: MediaInfo) -> dict:
     for name in FIELDS:
         if name not in expected:
             continue
-        want = (expected.get(name) or "").strip()
-        got = info.tag(name).strip()
+        want = " ".join((expected.get(name) or "").split())
+        got = " ".join(info.tag(name).split())
         if not want:
             result[name] = got == ""
         else:
