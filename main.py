@@ -46,17 +46,29 @@ def selftest() -> int:
             out_path = Path(sys.argv[index + 1])
     lines: list[str] = []
 
+    # Een harde crash (access violation) laat anders niets na. faulthandler
+    # schrijft de Python-stack naar een bestand, ook als het proces daarna valt.
+    try:
+        import faulthandler
+
+        crash_pad = (out_path.with_suffix(".crash.log") if out_path
+                     else Path(tempfile.gettempdir()) / "mediameta-crash.log")
+        faulthandler.enable(open(crash_pad, "w", encoding="utf-8"))  # noqa: SIM115
+    except Exception:
+        pass
+
     def log(message: str) -> None:
         lines.append(message)
-        if sys.stdout is not None:
-            try:
-                print(message, flush=True)
-            except Exception:
-                pass
+        # Eerst het bestand: een volle stdout-pijp mag het rapport niet blokkeren.
         if out_path:
             try:
                 out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
             except OSError:
+                pass
+        if sys.stdout is not None:
+            try:
+                print(message, flush=True)
+            except Exception:
                 pass
 
     stap = {"nu": "start"}

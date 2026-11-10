@@ -96,6 +96,11 @@ jobs:
           Remove-Item Env:QT_QPA_PLATFORM -ErrorAction SilentlyContinue
           $proc = Start-Process -FilePath $exe -ArgumentList '--selftest','--out',"`"$out`"" -PassThru
           if (-not $proc.WaitForExit(300000)) {
+            Write-Host "proces reageert nog: $($proc.Responding), afgesloten: $($proc.HasExited)"
+            Get-Process -Id $proc.Id -ErrorAction SilentlyContinue |
+              Select-Object Id, ProcessName, Responding, CPU | Format-List
+            $crash = Join-Path $env:GITHUB_WORKSPACE 'selftest.crash.log'
+            if (Test-Path $crash) { Write-Host "--- faulthandler ---"; Get-Content $crash -Raw | Write-Host }
             $proc.Kill()
             if (Test-Path $out) { Get-Content $out -Raw | Write-Host }
             throw "De self-test van de gebouwde app liep vast"
